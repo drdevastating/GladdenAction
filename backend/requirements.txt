@@ -1,0 +1,15 @@
+# requirements.txt
+# Core backend dependencies for the AI Agent project.
+# Install with: pip install -r requirements.txt
+
+# Web framework (routes added in next phase)
+fastapi>=0.111.0
+
+# ASGI server
+uvicorn[standard]>=0.29.0
+
+# Google Gemini SDK (LLM integration added in next phase)
+google-generativeai>=0.5.0
+
+# Typing backports (Python 3.11 has most built-in, kept for safety)
+typing-extensions>=4.11.0
