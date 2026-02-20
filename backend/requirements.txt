@@ -9,7 +9,11 @@ fastapi>=0.111.0
 uvicorn[standard]>=0.29.0
 
 # Google Gemini SDK (LLM integration added in next phase)
-google-generativeai>=0.5.0
+# google-generativeai>=0.5.0 ( DEPRICATED, use google-genai instead )
+google-genai>=0.5.0
 
 # Typing backports (Python 3.11 has most built-in, kept for safety)
 typing-extensions>=4.11.0
+
+# Loads .env file into environment variables automatically
+python-dotenv>=1.0.0

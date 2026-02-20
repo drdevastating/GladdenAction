@@ -1,16 +1,34 @@
 """
 main.py
 
-Manual integration test for the Tool Abstraction + Execution layers.
-All tool calls now go through ToolExecutor — no layer calls tool.execute() directly.
+Interactive entry point for the AI Agent backend.
+Loads the full stack (Registry → Executor → Agent) and drops into a
+terminal REPL where you can give natural-language instructions to the agent.
 
-Usage
+Setup
 -----
+    # Windows
+    set GEMINI_API_KEY=your_key_here
     python main.py
+
+    # PowerShell
+    $env:GEMINI_API_KEY="your_key_here"
+    python main.py
+
+    # macOS / Linux
+    export GEMINI_API_KEY=your_key_here
+    python main.py
+
+Type  'quit' or 'exit'  to stop.
+Type  'tools'           to list registered tools.
 """
 
 import logging
-from pathlib import Path
+import os
+import sys
+
+from dotenv import load_dotenv
+load_dotenv()  # reads .env from the project root before anything else runs
 
 # --------------------------------------------------------------------------- #
 #  Logging                                                                      #
@@ -26,145 +44,103 @@ logger = logging.getLogger("main")
 # --------------------------------------------------------------------------- #
 #  Imports                                                                      #
 # --------------------------------------------------------------------------- #
-from core.tools import FileCreationTool, ToolResult
+from core.tools import FileCreationTool
 from core.tools.registry import ToolRegistry
 from execution.executor import ToolExecutor
+from agent.agent import Agent
 
 
 # --------------------------------------------------------------------------- #
-#  Helpers                                                                      #
+#  Bootstrap                                                                    #
 # --------------------------------------------------------------------------- #
 
-def print_section(title: str) -> None:
-    print(f"\n{'─' * 62}")
-    print(f"  {title}")
-    print(f"{'─' * 62}")
+def build_agent() -> Agent:
+    """Wire up the full stack and return a ready Agent."""
 
+    # 1. API key
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        print("\n[ERROR] GEMINI_API_KEY environment variable is not set.")
+        print("        Set it and re-run:  set GEMINI_API_KEY=your_key_here")
+        sys.exit(1)
 
-def assert_result(label: str, result: ToolResult, expect_success: bool) -> None:
-    status = "✅ PASS" if result.success == expect_success else "❌ FAIL"
-    print(f"  {status}  [{label}]")
-    if result.success:
-        print(f"         output   : {result.output}")
-        print(f"         metadata : {result.metadata}")
-    else:
-        print(f"         error    : {result.error}")
-
-
-# --------------------------------------------------------------------------- #
-#  Bootstrap: registry + executor                                               #
-# --------------------------------------------------------------------------- #
-
-def build_executor() -> ToolExecutor:
-    """
-    Compose the registry and executor.
-    In production this wiring will live in an app factory / DI container.
-    """
+    # 2. Registry — register all tools here
     registry = ToolRegistry()
     registry.register(FileCreationTool())
+
+    # 3. Executor
     executor = ToolExecutor(registry)
-    print(f"\n  Executor ready: {executor}")
-    return executor
+
+    # 4. Agent
+    agent = Agent(registry=registry, executor=executor, api_key=api_key)
+
+    return agent
 
 
 # --------------------------------------------------------------------------- #
-#  Test suite                                                                   #
+#  REPL                                                                         #
 # --------------------------------------------------------------------------- #
 
-def test_executor_introspection(executor: ToolExecutor) -> None:
-    print_section("1 · Executor — introspection")
-    print(f"  Available tools : {executor.available_tools()}")
-    for m in executor.tool_metadata():
-        print(f"  Tool descriptor : name={m['name']!r}  "
-              f"desc={m['description'][:55]!r}…")
-    print("  ✅ PASS  [executor introspection]")
+BANNER = """
+╔══════════════════════════════════════════════════════════════╗
+║            AI Agent Backend — Interactive Mode             ║
+╠══════════════════════════════════════════════════════════════╣
+║  Commands:                                                  ║
+║    tools        → list available tools                      ║
+║    quit / exit  → exit                                      ║
+║    <anything else> → sent to the agent as an instruction    ║
+╚══════════════════════════════════════════════════════════════╝
+"""
 
-
-def test_successful_creation(executor: ToolExecutor) -> None:
-    print_section("2 · Executor → FileCreationTool — successful creation")
-    result = executor.execute("file_creation",
-                              filename="test_output/hello.txt",
-                              content="Hello from the executor layer!\n")
-    assert_result("create hello.txt", result, expect_success=True)
+def print_result(result) -> None:
+    """Pretty-print a ToolResult."""
     if result.success:
-        assert Path(result.output).exists(), "File not on disk!"
-        print("  ✅ PASS  [file exists on disk]")
+        print(f"\n  ✅  Success")
+        print(f"  Output   : {result.output}")
+        if result.metadata:
+            print(f"  Metadata : {result.metadata}")
+    else:
+        print(f"\n  ❌  Failed")
+        print(f"  Error    : {result.error}")
 
 
-def test_overwrite_guard(executor: ToolExecutor) -> None:
-    print_section("3 · Executor → FileCreationTool — overwrite guard (expect failure)")
-    result = executor.execute("file_creation",
-                              filename="test_output/hello.txt",
-                              content="Should be blocked")
-    assert_result("overwrite blocked", result, expect_success=False)
+def repl(agent: Agent) -> None:
+    print(BANNER)
+    print(f"  Agent   : {agent}")
+    print()
 
+    while True:
+        try:
+            raw = input("You › ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nGoodbye.")
+            break
 
-def test_explicit_overwrite(executor: ToolExecutor) -> None:
-    print_section("4 · Executor → FileCreationTool — overwrite=True (expect success)")
-    result = executor.execute("file_creation",
-                              filename="test_output/hello.txt",
-                              content="Updated via executor ✓\n",
-                              overwrite=True)
-    assert_result("overwrite allowed", result, expect_success=True)
-    if result.success:
-        content = Path(result.output).read_text(encoding="utf-8")
-        assert "Updated via executor" in content
-        print("  ✅ PASS  [file content updated on disk]")
+        if not raw:
+            continue
 
+        if raw.lower() in {"quit", "exit"}:
+            print("Goodbye.")
+            break
 
-def test_missing_inputs(executor: ToolExecutor) -> None:
-    print_section("5 · Executor — missing required inputs (expect failure)")
-    result = executor.execute("file_creation", filename="ghost.txt")
-    assert_result("missing content", result, expect_success=False)
+        if raw.lower() == "tools":
+            print("\n  Registered tools:")
+            for name in agent._registry.list_names():
+                print(f"    • {name}")
+            print()
+            continue
 
-
-def test_unknown_tool(executor: ToolExecutor) -> None:
-    print_section("6 · Executor — unknown tool name (expect failure)")
-    result = executor.execute("nonexistent_tool", foo="bar")
-    assert_result("unknown tool", result, expect_success=False)
-
-
-def test_empty_filename(executor: ToolExecutor) -> None:
-    print_section("7 · Executor → FileCreationTool — empty filename (expect failure)")
-    result = executor.execute("file_creation", filename="  ", content="data")
-    assert_result("empty filename", result, expect_success=False)
-
-
-def test_nested_path_creation(executor: ToolExecutor) -> None:
-    print_section("8 · Executor → FileCreationTool — nested directories")
-    result = executor.execute("file_creation",
-                              filename="test_output/deep/nested/report.txt",
-                              content="Deep file created via executor.\n")
-    assert_result("nested path", result, expect_success=True)
-    if result.success:
-        assert Path(result.output).exists()
-        print("  ✅ PASS  [nested directories created on disk]")
+        # Send to agent
+        print()
+        result = agent.run(raw)
+        print_result(result)
+        print()
 
 
 # --------------------------------------------------------------------------- #
 #  Entry point                                                                  #
 # --------------------------------------------------------------------------- #
 
-def main() -> None:
-    print("\n╔════════════════════════════════════════════════════════════╗")
-    print("║      AI Agent Backend — Execution Layer Test Suite        ║")
-    print("╚════════════════════════════════════════════════════════════╝")
-
-    executor = build_executor()
-
-    test_executor_introspection(executor)
-    test_successful_creation(executor)
-    test_overwrite_guard(executor)
-    test_explicit_overwrite(executor)
-    test_missing_inputs(executor)
-    test_unknown_tool(executor)
-    test_empty_filename(executor)
-    test_nested_path_creation(executor)
-
-    print("\n" + "═" * 62)
-    print("  All tests completed.")
-    print("═" * 62 + "\n")
-
-
 if __name__ == "__main__":
-    main()
+    agent = build_agent()
+    repl(agent)
