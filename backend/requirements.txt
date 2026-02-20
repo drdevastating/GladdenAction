@@ -1,5 +1,4 @@
 # requirements.txt
-# Core backend dependencies for the AI Agent project.
 # Install with: pip install -r requirements.txt
 
 # Web framework (routes added in next phase)
@@ -8,12 +7,11 @@ fastapi>=0.111.0
 # ASGI server
 uvicorn[standard]>=0.29.0
 
-# Google Gemini SDK (LLM integration added in next phase)
-# google-generativeai>=0.5.0 ( DEPRICATED, use google-genai instead )
-google-genai>=0.5.0
+# xAI Grok — via OpenAI-compatible SDK (just a base_url swap, no separate xAI package)
+openai>=1.30.0
 
-# Typing backports (Python 3.11 has most built-in, kept for safety)
-typing-extensions>=4.11.0
-
-# Loads .env file into environment variables automatically
+# Loads .env file into environment automatically
 python-dotenv>=1.0.0
+
+# Typing backports
+typing-extensions>=4.11.0

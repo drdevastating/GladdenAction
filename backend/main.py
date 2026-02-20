@@ -8,15 +8,15 @@ terminal REPL where you can give natural-language instructions to the agent.
 Setup
 -----
     # Windows
-    set GEMINI_API_KEY=your_key_here
+    set XAI_API_KEY=your_key_here
     python main.py
 
     # PowerShell
-    $env:GEMINI_API_KEY="your_key_here"
+    $env:XAI_API_KEY="your_key_here"
     python main.py
 
     # macOS / Linux
-    export GEMINI_API_KEY=your_key_here
+    export XAI_API_KEY=your_key_here
     python main.py
 
 Type  'quit' or 'exit'  to stop.
@@ -58,10 +58,10 @@ def build_agent() -> Agent:
     """Wire up the full stack and return a ready Agent."""
 
     # 1. API key
-    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    api_key = os.environ.get("XAI_API_KEY", "").strip()
     if not api_key:
-        print("\n[ERROR] GEMINI_API_KEY environment variable is not set.")
-        print("        Set it and re-run:  set GEMINI_API_KEY=your_key_here")
+        print("\n[ERROR] XAI_API_KEY environment variable is not set.")
+        print("        Set it and re-run:  set XAI_API_KEY=your_key_here")
         sys.exit(1)
 
     # 2. Registry — register all tools here

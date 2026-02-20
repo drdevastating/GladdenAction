@@ -6,8 +6,8 @@ and is the only layer that communicates with the LLM.
 
 Responsibilities
 ----------------
-- Build a structured prompt that exposes available tools to Gemini.
-- Send the user instruction to Gemini and receive a tool-call decision.
+- Build a structured prompt that exposes available tools to Grok.
+- Send the user instruction to Grok via the xAI API.
 - Safely parse the model's JSON response.
 - Delegate execution to ToolExecutor and return the result.
 - Never execute tools directly — always goes through the Executor.
@@ -17,6 +17,11 @@ What this layer is NOT responsible for
 - Knowing how tools work internally (that's BaseTool's job).
 - Performing validation (that's the Executor's job).
 - Storing conversation history (multi-turn reasoning — future phase).
+
+API note
+--------
+xAI's API is fully OpenAI-compatible. We use the `openai` Python SDK and
+simply point it at https://api.x.ai/v1. No separate xAI SDK is needed.
 """
 
 from __future__ import annotations
@@ -26,8 +31,7 @@ import logging
 import re
 from typing import Any
 
-from google import genai # new hai bc 
-from google.genai import types
+from openai import OpenAI
 
 from core.tools.base import ToolResult
 from core.tools.registry import ToolRegistry
@@ -35,8 +39,10 @@ from execution.executor import ToolExecutor
 
 logger = logging.getLogger(__name__)
 
+_XAI_BASE_URL = "https://api.x.ai/v1"
+
 # --------------------------------------------------------------------------- #
-#  Prompt template                                                              #
+#  Prompt templates                                                             #
 # --------------------------------------------------------------------------- #
 
 _SYSTEM_PROMPT = """\
@@ -53,10 +59,10 @@ RULES:
 - The JSON must have exactly two keys: "tool" and "arguments".
 - "tool" must be the exact tool name from the list.
 - "arguments" must be an object matching the tool's input schema.
-- If no tool is appropriate, respond with: {{"tool": null, "arguments": {{}}}}
+- If no tool is appropriate, respond with: {"tool": null, "arguments": {}}
 
 RESPONSE FORMAT:
-{{"tool": "<tool_name>", "arguments": {{<key>: <value>, ...}}}}
+{"tool": "<tool_name>", "arguments": {<key>: <value>, ...}}
 """
 
 _USER_PROMPT_TEMPLATE = """\
@@ -89,15 +95,13 @@ def _build_tool_listing(metadata: list[dict]) -> str:
 
 def _extract_json(text: str) -> str:
     """
-    Attempt to extract a JSON object from the model response even if the
-    model wrapped it in markdown fences despite instructions not to.
+    Extract a JSON object from the model response even if it wrapped the
+    output in markdown fences despite instructions not to.
     """
-    # Strip ```json ... ``` or ``` ... ``` fences
     fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if fenced:
         return fenced.group(1)
 
-    # Find first { ... } block
     brace_match = re.search(r"\{.*\}", text, re.DOTALL)
     if brace_match:
         return brace_match.group(0)
@@ -111,18 +115,14 @@ def _extract_json(text: str) -> str:
 
 class Agent:
     """
-    Single-step reasoning agent backed by Gemini.
+    Single-step reasoning agent backed by xAI Grok.
 
     Parameters
     ----------
-    registry : ToolRegistry
-        Used to pull tool metadata for prompt construction.
-    executor : ToolExecutor
-        Used to dispatch the tool call decided by the model.
-    api_key  : str
-        Google Generative AI API key.
-    model_name : str
-        Gemini model identifier. Defaults to gemini-2.0-flash.
+    registry   : ToolRegistry   -- provides tool metadata for prompt building.
+    executor   : ToolExecutor   -- dispatches the tool call decided by Grok.
+    api_key    : str            -- xAI API key from console.x.ai.
+    model_name : str            -- Grok model identifier. Defaults to grok-3.
     """
 
     def __init__(
@@ -130,34 +130,21 @@ class Agent:
         registry: ToolRegistry,
         executor: ToolExecutor,
         api_key: str,
-        model_name: str = "gemini-2.0-flash",
+        model_name: str = "grok-3",
     ) -> None:
         self._registry = registry
         self._executor = executor
         self._model_name = model_name
 
-        # NEW: create client instead of configuring global state
-        self._client = genai.Client(api_key=api_key)
-
-        # Store generation config once (adjust as needed)
-        self._generation_config = types.GenerateContentConfig(
-            system_instruction=_SYSTEM_PROMPT,
-            temperature=0.3,   # good default for tool agents
+        # OpenAI SDK pointed at xAI's base URL -- no extra packages needed
+        self._client = OpenAI(
+            api_key=api_key,
+            base_url=_XAI_BASE_URL,
         )
 
-        logger.info(
-            "Agent initialised with model=%r  tools=%s",
-            model_name,
-            registry.list_names(),
-        )
+        logger.info("Agent initialised -- model=%r  tools=%s",
+                    model_name, registry.list_names())
 
-    def _generate(self, prompt: str) -> str:
-        response = self._client.models.generate_content(
-            model=self._model_name,
-            contents=prompt,
-            config=self._generation_config,
-        )
-        return response.text
     # ------------------------------------------------------------------ #
     #  Public API                                                          #
     # ------------------------------------------------------------------ #
@@ -169,19 +156,14 @@ class Agent:
         Steps
         -----
         1. Build a prompt exposing available tools + the user instruction.
-        2. Send to Gemini and receive a raw text response.
-        3. Parse the JSON tool-call decision.
+        2. Send to Grok via the OpenAI-compatible chat completions endpoint.
+        3. Safely parse the JSON tool-call decision from the response.
         4. Validate the decision structure.
-        5. Delegate to executor and return ToolResult.
-
-        Parameters
-        ----------
-        instruction : str
-            Plain-English instruction from the user or upstream caller.
+        5. Delegate execution to ToolExecutor and return ToolResult.
 
         Returns
         -------
-        ToolResult — always returned, never raises.
+        ToolResult -- always returned, never raises.
         """
         if not instruction.strip():
             return ToolResult(success=False, error="Instruction must not be empty.")
@@ -194,17 +176,26 @@ class Agent:
             instruction=instruction,
         )
 
-        logger.info("Agent sending instruction to Gemini: %r", instruction[:120])
+        logger.info("Sending instruction to Grok: %r", instruction[:120])
 
-        # --- 2. Call Gemini --------------------------------------------- #
+        # --- 2. Call Grok ----------------------------------------------- #
         try:
-            raw_text: str = self._generate(user_prompt)
+            response = self._client.chat.completions.create(
+                model=self._model_name,
+                messages=[
+                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "user",   "content": user_prompt},
+                ],
+                temperature=0,    # deterministic tool selection
+                max_tokens=512,   # tool calls are short JSON blobs
+            )
+            raw_text: str = response.choices[0].message.content or ""
         except Exception as exc:  # noqa: BLE001
-            msg = f"Gemini API call failed: {exc}"
+            msg = f"xAI API call failed: {exc}"
             logger.error(msg)
             return ToolResult(success=False, error=msg)
 
-        logger.debug("Gemini raw response: %s", raw_text)
+        logger.debug("Grok raw response: %s", raw_text)
 
         # --- 3. Parse JSON ---------------------------------------------- #
         json_str = _extract_json(raw_text)
@@ -227,12 +218,12 @@ class Agent:
             )
 
         tool_name = decision.get("tool")
-        arguments = decision.get("arguments", {})
+        arguments  = decision.get("arguments", {})
 
         if tool_name is None:
             return ToolResult(
                 success=False,
-                error="Model responded with tool=null — no suitable tool found for this instruction.",
+                error="Model responded with tool=null -- no suitable tool for this instruction.",
                 metadata={"raw": raw_text},
             )
 
@@ -243,7 +234,7 @@ class Agent:
                 metadata={"raw": raw_text},
             )
 
-        logger.info("Agent decision → tool=%r  arguments=%s",
+        logger.info("Grok decision -> tool=%r  arguments=%s",
                     tool_name, list(arguments.keys()))
 
         # --- 5. Execute via Executor ------------------------------------ #
