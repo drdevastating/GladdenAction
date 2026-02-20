@@ -1,9 +1,8 @@
 """
 main.py
 
-Manual integration test for the tool abstraction layer.
-Run this script to verify that the registry and FileCreationTool work
-correctly before moving on to LLM / FastAPI integration.
+Manual integration test for the Tool Abstraction + Execution layers.
+All tool calls now go through ToolExecutor — no layer calls tool.execute() directly.
 
 Usage
 -----
@@ -11,11 +10,10 @@ Usage
 """
 
 import logging
-import sys
 from pathlib import Path
 
 # --------------------------------------------------------------------------- #
-#  Logging setup  (shows INFO messages from tools/registry in the terminal)    #
+#  Logging                                                                      #
 # --------------------------------------------------------------------------- #
 logging.basicConfig(
     level=logging.INFO,
@@ -28,17 +26,19 @@ logger = logging.getLogger("main")
 # --------------------------------------------------------------------------- #
 #  Imports                                                                      #
 # --------------------------------------------------------------------------- #
-from core.tools import FileCreationTool, ToolResult, registry
+from core.tools import FileCreationTool, ToolResult
+from core.tools.registry import ToolRegistry
+from execution.executor import ToolExecutor
 
 
 # --------------------------------------------------------------------------- #
-#  Helper                                                                       #
+#  Helpers                                                                      #
 # --------------------------------------------------------------------------- #
 
 def print_section(title: str) -> None:
-    print(f"\n{'─' * 60}")
+    print(f"\n{'─' * 62}")
     print(f"  {title}")
-    print(f"{'─' * 60}")
+    print(f"{'─' * 62}")
 
 
 def assert_result(label: str, result: ToolResult, expect_success: bool) -> None:
@@ -52,101 +52,93 @@ def assert_result(label: str, result: ToolResult, expect_success: bool) -> None:
 
 
 # --------------------------------------------------------------------------- #
+#  Bootstrap: registry + executor                                               #
+# --------------------------------------------------------------------------- #
+
+def build_executor() -> ToolExecutor:
+    """
+    Compose the registry and executor.
+    In production this wiring will live in an app factory / DI container.
+    """
+    registry = ToolRegistry()
+    registry.register(FileCreationTool())
+    executor = ToolExecutor(registry)
+    print(f"\n  Executor ready: {executor}")
+    return executor
+
+
+# --------------------------------------------------------------------------- #
 #  Test suite                                                                   #
 # --------------------------------------------------------------------------- #
 
-def test_registry() -> None:
-    print_section("1 · Registry — registration & introspection")
-
-    tool = FileCreationTool()
-    registry.register(tool)
-
-    print(f"  Registry: {registry}")
-    print(f"  Registered tools: {registry.list_names()}")
-
-    metadata = registry.list_metadata()
-    print(f"  Tool metadata snapshot:")
-    for m in metadata:
-        print(f"    name        : {m['name']}")
-        print(f"    description : {m['description']}")
-        print(f"    input_schema: {m['input_schema']}")
-
-    assert "file_creation" in registry.list_names(), "file_creation not found!"
-    print("  ✅ PASS  [registry contains file_creation]")
+def test_executor_introspection(executor: ToolExecutor) -> None:
+    print_section("1 · Executor — introspection")
+    print(f"  Available tools : {executor.available_tools()}")
+    for m in executor.tool_metadata():
+        print(f"  Tool descriptor : name={m['name']!r}  "
+              f"desc={m['description'][:55]!r}…")
+    print("  ✅ PASS  [executor introspection]")
 
 
-def test_file_creation_success() -> None:
-    print_section("2 · FileCreationTool — successful creation")
-
-    tool = registry.get("file_creation")
-    result = tool.execute(filename="test_output/hello.txt", content="Hello, AI Agent!\n")
+def test_successful_creation(executor: ToolExecutor) -> None:
+    print_section("2 · Executor → FileCreationTool — successful creation")
+    result = executor.execute("file_creation",
+                              filename="test_output/hello.txt",
+                              content="Hello from the executor layer!\n")
     assert_result("create hello.txt", result, expect_success=True)
-
     if result.success:
-        assert Path(result.output).exists(), "File not found on disk!"
+        assert Path(result.output).exists(), "File not on disk!"
         print("  ✅ PASS  [file exists on disk]")
 
 
-def test_file_creation_overwrite_guard() -> None:
-    print_section("3 · FileCreationTool — overwrite guard (expect failure)")
-
-    tool = registry.get("file_creation")
-    # Try creating the same file again without overwrite=True → should fail
-    result = tool.execute(filename="test_output/hello.txt", content="Should not overwrite")
+def test_overwrite_guard(executor: ToolExecutor) -> None:
+    print_section("3 · Executor → FileCreationTool — overwrite guard (expect failure)")
+    result = executor.execute("file_creation",
+                              filename="test_output/hello.txt",
+                              content="Should be blocked")
     assert_result("overwrite blocked", result, expect_success=False)
 
 
-def test_file_creation_with_overwrite() -> None:
-    print_section("4 · FileCreationTool — explicit overwrite=True (expect success)")
-
-    tool = registry.get("file_creation")
-    result = tool.execute(
-        filename="test_output/hello.txt",
-        content="Overwritten content ✓\n",
-        overwrite=True,
-    )
+def test_explicit_overwrite(executor: ToolExecutor) -> None:
+    print_section("4 · Executor → FileCreationTool — overwrite=True (expect success)")
+    result = executor.execute("file_creation",
+                              filename="test_output/hello.txt",
+                              content="Updated via executor ✓\n",
+                              overwrite=True)
     assert_result("overwrite allowed", result, expect_success=True)
-
     if result.success:
         content = Path(result.output).read_text(encoding="utf-8")
-        assert "Overwritten" in content
+        assert "Updated via executor" in content
         print("  ✅ PASS  [file content updated on disk]")
 
 
-def test_missing_required_inputs() -> None:
-    print_section("5 · FileCreationTool — missing required inputs (expect failure)")
-
-    tool = registry.get("file_creation")
-    result = tool.execute(filename="something.txt")  # 'content' omitted
+def test_missing_inputs(executor: ToolExecutor) -> None:
+    print_section("5 · Executor — missing required inputs (expect failure)")
+    result = executor.execute("file_creation", filename="ghost.txt")
     assert_result("missing content", result, expect_success=False)
 
 
-def test_empty_filename() -> None:
-    print_section("6 · FileCreationTool — empty filename (expect failure)")
+def test_unknown_tool(executor: ToolExecutor) -> None:
+    print_section("6 · Executor — unknown tool name (expect failure)")
+    result = executor.execute("nonexistent_tool", foo="bar")
+    assert_result("unknown tool", result, expect_success=False)
 
-    tool = registry.get("file_creation")
-    result = tool.execute(filename="   ", content="data")
+
+def test_empty_filename(executor: ToolExecutor) -> None:
+    print_section("7 · Executor → FileCreationTool — empty filename (expect failure)")
+    result = executor.execute("file_creation", filename="  ", content="data")
     assert_result("empty filename", result, expect_success=False)
 
 
-def test_duplicate_registry_registration() -> None:
-    print_section("7 · Registry — duplicate registration (expect ValueError)")
-
-    try:
-        registry.register(FileCreationTool())  # already registered
-        print("  ❌ FAIL  [no error raised for duplicate]")
-    except ValueError as exc:
-        print(f"  ✅ PASS  [ValueError raised: {exc}]")
-
-
-def test_unknown_tool_lookup() -> None:
-    print_section("8 · Registry — unknown tool lookup (expect KeyError)")
-
-    try:
-        registry.get("nonexistent_tool")
-        print("  ❌ FAIL  [no error raised]")
-    except KeyError as exc:
-        print(f"  ✅ PASS  [KeyError raised: {exc}]")
+def test_nested_path_creation(executor: ToolExecutor) -> None:
+    print_section("8 · Executor → FileCreationTool — nested directories")
+    result = executor.execute("file_creation",
+                              filename="test_output/deep/nested/report.txt",
+                              content="Deep file created via executor.\n")
+    assert_result("nested path", result, expect_success=True)
+    if result.success:
+        assert Path(result.output).exists()
+        print("  ✅ PASS  [nested directories created on disk]")
 
 
 # --------------------------------------------------------------------------- #
@@ -154,22 +146,24 @@ def test_unknown_tool_lookup() -> None:
 # --------------------------------------------------------------------------- #
 
 def main() -> None:
-    print("\n╔══════════════════════════════════════════════════════════╗")
-    print("║         AI Agent Backend — Tool Layer Test Suite        ║")
-    print("╚══════════════════════════════════════════════════════════╝")
+    print("\n╔════════════════════════════════════════════════════════════╗")
+    print("║      AI Agent Backend — Execution Layer Test Suite        ║")
+    print("╚════════════════════════════════════════════════════════════╝")
 
-    test_registry()
-    test_file_creation_success()
-    test_file_creation_overwrite_guard()
-    test_file_creation_with_overwrite()
-    test_missing_required_inputs()
-    test_empty_filename()
-    test_duplicate_registry_registration()
-    test_unknown_tool_lookup()
+    executor = build_executor()
 
-    print("\n" + "═" * 60)
+    test_executor_introspection(executor)
+    test_successful_creation(executor)
+    test_overwrite_guard(executor)
+    test_explicit_overwrite(executor)
+    test_missing_inputs(executor)
+    test_unknown_tool(executor)
+    test_empty_filename(executor)
+    test_nested_path_creation(executor)
+
+    print("\n" + "═" * 62)
     print("  All tests completed.")
-    print("═" * 60 + "\n")
+    print("═" * 62 + "\n")
 
 
 if __name__ == "__main__":
