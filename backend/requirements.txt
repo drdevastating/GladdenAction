@@ -7,8 +7,9 @@ fastapi>=0.111.0
 # ASGI server
 uvicorn[standard]>=0.29.0
 
-# xAI Grok — via OpenAI-compatible SDK (just a base_url swap, no separate xAI package)
-openai>=1.30.0
+# Groq SDK — official client for Groq's LPU inference API (Llama, Mixtral, etc.)
+# Mirrors the OpenAI client interface; no extra adapters needed.
+groq>=0.9.0
 
 # Loads .env file into environment automatically
 python-dotenv>=1.0.0

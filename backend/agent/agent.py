@@ -6,8 +6,8 @@ and is the only layer that communicates with the LLM.
 
 Responsibilities
 ----------------
-- Build a structured prompt that exposes available tools to Grok.
-- Send the user instruction to Grok via the xAI API.
+- Build a structured prompt that exposes available tools to the model.
+- Send the user instruction to Llama via the Groq API.
 - Safely parse the model's JSON response.
 - Delegate execution to ToolExecutor and return the result.
 - Never execute tools directly — always goes through the Executor.
@@ -20,8 +20,8 @@ What this layer is NOT responsible for
 
 API note
 --------
-xAI's API is fully OpenAI-compatible. We use the `openai` Python SDK and
-simply point it at https://api.x.ai/v1. No separate xAI SDK is needed.
+Groq's API is fully OpenAI-compatible. We use the official `groq` Python SDK
+which mirrors the OpenAI client interface exactly.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ import logging
 import re
 from typing import Any
 
-from openai import OpenAI
+from groq import Groq
 
 from core.tools.base import ToolResult
 from core.tools.registry import ToolRegistry
@@ -39,7 +39,7 @@ from execution.executor import ToolExecutor
 
 logger = logging.getLogger(__name__)
 
-_XAI_BASE_URL = "https://api.x.ai/v1"
+_DEFAULT_MODEL = "llama-3.3-70b-versatile"
 
 # --------------------------------------------------------------------------- #
 #  Prompt templates                                                             #
@@ -115,14 +115,14 @@ def _extract_json(text: str) -> str:
 
 class Agent:
     """
-    Single-step reasoning agent backed by xAI Grok.
+    Single-step reasoning agent backed by Groq + Llama 3.3.
 
     Parameters
     ----------
     registry   : ToolRegistry   -- provides tool metadata for prompt building.
-    executor   : ToolExecutor   -- dispatches the tool call decided by Grok.
-    api_key    : str            -- xAI API key from console.x.ai.
-    model_name : str            -- Grok model identifier. Defaults to grok-3.
+    executor   : ToolExecutor   -- dispatches the tool call decided by the model.
+    api_key    : str            -- Groq API key from console.groq.com.
+    model_name : str            -- Groq model identifier. Defaults to llama-3.3-70b-versatile.
     """
 
     def __init__(
@@ -130,20 +130,20 @@ class Agent:
         registry: ToolRegistry,
         executor: ToolExecutor,
         api_key: str,
-        model_name: str = "grok-3",
+        model_name: str = _DEFAULT_MODEL,
     ) -> None:
         self._registry = registry
         self._executor = executor
         self._model_name = model_name
 
-        # OpenAI SDK pointed at xAI's base URL -- no extra packages needed
-        self._client = OpenAI(
-            api_key=api_key,
-            base_url=_XAI_BASE_URL,
-        )
+        # Official Groq Python SDK — mirrors OpenAI client interface
+        self._client = Groq(api_key=api_key)
 
-        logger.info("Agent initialised -- model=%r  tools=%s",
-                    model_name, registry.list_names())
+        logger.info(
+            "Agent initialised — model=%r  tools=%s",
+            model_name,
+            registry.list_names(),
+        )
 
     # ------------------------------------------------------------------ #
     #  Public API                                                          #
@@ -156,7 +156,7 @@ class Agent:
         Steps
         -----
         1. Build a prompt exposing available tools + the user instruction.
-        2. Send to Grok via the OpenAI-compatible chat completions endpoint.
+        2. Send to Llama via Groq's chat completions endpoint.
         3. Safely parse the JSON tool-call decision from the response.
         4. Validate the decision structure.
         5. Delegate execution to ToolExecutor and return ToolResult.
@@ -176,9 +176,9 @@ class Agent:
             instruction=instruction,
         )
 
-        logger.info("Sending instruction to Grok: %r", instruction[:120])
+        logger.info("Sending instruction to Groq/Llama: %r", instruction[:120])
 
-        # --- 2. Call Grok ----------------------------------------------- #
+        # --- 2. Call Groq ----------------------------------------------- #
         try:
             response = self._client.chat.completions.create(
                 model=self._model_name,
@@ -186,16 +186,16 @@ class Agent:
                     {"role": "system", "content": _SYSTEM_PROMPT},
                     {"role": "user",   "content": user_prompt},
                 ],
-                temperature=0,    # deterministic tool selection
-                max_tokens=512,   # tool calls are short JSON blobs
+                temperature=0,      # deterministic tool selection
+                max_tokens=512,     # tool calls are short JSON blobs
             )
             raw_text: str = response.choices[0].message.content or ""
         except Exception as exc:  # noqa: BLE001
-            msg = f"xAI API call failed: {exc}"
+            msg = f"Groq API call failed: {exc}"
             logger.error(msg)
             return ToolResult(success=False, error=msg)
 
-        logger.debug("Grok raw response: %s", raw_text)
+        logger.debug("Groq raw response: %s", raw_text)
 
         # --- 3. Parse JSON ---------------------------------------------- #
         json_str = _extract_json(raw_text)
@@ -223,7 +223,7 @@ class Agent:
         if tool_name is None:
             return ToolResult(
                 success=False,
-                error="Model responded with tool=null -- no suitable tool for this instruction.",
+                error="Model responded with tool=null — no suitable tool for this instruction.",
                 metadata={"raw": raw_text},
             )
 
@@ -234,8 +234,11 @@ class Agent:
                 metadata={"raw": raw_text},
             )
 
-        logger.info("Grok decision -> tool=%r  arguments=%s",
-                    tool_name, list(arguments.keys()))
+        logger.info(
+            "Model decision → tool=%r  arguments=%s",
+            tool_name,
+            list(arguments.keys()),
+        )
 
         # --- 5. Execute via Executor ------------------------------------ #
         return self._executor.execute(tool_name, **arguments)

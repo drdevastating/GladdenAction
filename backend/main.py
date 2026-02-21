@@ -8,15 +8,15 @@ terminal REPL where you can give natural-language instructions to the agent.
 Setup
 -----
     # Windows
-    set XAI_API_KEY=your_key_here
+    set GROQ_API_KEY=your_key_here
     python main.py
 
     # PowerShell
-    $env:XAI_API_KEY="your_key_here"
+    $env:GROQ_API_KEY="your_key_here"
     python main.py
 
     # macOS / Linux
-    export XAI_API_KEY=your_key_here
+    export GROQ_API_KEY=your_key_here
     python main.py
 
 Type  'quit' or 'exit'  to stop.
@@ -58,10 +58,11 @@ def build_agent() -> Agent:
     """Wire up the full stack and return a ready Agent."""
 
     # 1. API key
-    api_key = os.environ.get("XAI_API_KEY", "").strip()
+    api_key = os.environ.get("GROQ_API_KEY", "").strip()
     if not api_key:
-        print("\n[ERROR] XAI_API_KEY environment variable is not set.")
-        print("        Set it and re-run:  set XAI_API_KEY=your_key_here")
+        print("\n[ERROR] GROQ_API_KEY environment variable is not set.")
+        print("        Get your key at https://console.groq.com")
+        print("        Then set it:  export GROQ_API_KEY=your_key_here")
         sys.exit(1)
 
     # 2. Registry — register all tools here
@@ -71,7 +72,7 @@ def build_agent() -> Agent:
     # 3. Executor
     executor = ToolExecutor(registry)
 
-    # 4. Agent
+    # 4. Agent (defaults to llama-3.1-70b-versatile)
     agent = Agent(registry=registry, executor=executor, api_key=api_key)
 
     return agent
@@ -83,7 +84,7 @@ def build_agent() -> Agent:
 
 BANNER = """
 ╔══════════════════════════════════════════════════════════════╗
-║            AI Agent Backend — Interactive Mode             ║
+║         AI Agent Backend — Interactive Mode (Groq)          ║
 ╠══════════════════════════════════════════════════════════════╣
 ║  Commands:                                                  ║
 ║    tools        → list available tools                      ║
