@@ -12,20 +12,73 @@ Responsibilities
 - Run the tool and surface a standardised ToolResult.
 - Catch and wrap any unexpected runtime exceptions so callers never
   receive a raw Python exception from tool code.
-- (Future) Provide a single place to add cross-cutting concerns such as
-  logging, metrics, rate-limiting, timeouts, and retry logic.
+- Emit structured execution events at every key stage via an optional
+  event_callback. This decouples monitoring from execution logic and
+  prepares the system for future real-time streaming (WebSocket, SSE, etc.).
+
+Event contract
+--------------
+Each event is a plain dict with a stable schema:
+
+    {
+        "type":      "info" | "status" | "error",
+        "stage":     "<stage_name>",
+        "message":   "<human-readable description>",
+        "tool":      "<tool_name>",
+        "timestamp": "<ISO-8601 UTC timestamp>"
+    }
+
+Stages emitted (in order of a successful execution):
+    tool_lookup_started
+    tool_lookup_completed
+    validation_started
+    validation_failed       ← only when required inputs are missing
+    execution_started
+    execution_completed
+    execution_failed        ← only when an unhandled exception is raised
 """
 
 from __future__ import annotations
 
 import logging
 import traceback
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Callable, Optional
 
 from core.tools.base import ToolResult
 from core.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
+
+# Type alias for the callback — keeps signatures readable
+EventCallback = Optional[Callable[[dict], None]]
+
+
+def _now() -> str:
+    """Return the current UTC time as an ISO-8601 string."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _make_event(
+    *,
+    type: str,          # noqa: A002  (shadowing built-in intentionally for clarity)
+    stage: str,
+    message: str,
+    tool: str,
+) -> dict:
+    """
+    Build a fully-formed event dict.
+
+    All fields are always present so consumers never have to guard against
+    missing keys.
+    """
+    return {
+        "type":      type,
+        "stage":     stage,
+        "message":   message,
+        "tool":      tool,
+        "timestamp": _now(),
+    }
 
 
 class ToolExecutor:
@@ -45,33 +98,66 @@ class ToolExecutor:
     registry.register(FileCreationTool())
 
     executor = ToolExecutor(registry)
+
+    # Without events (original behaviour, fully preserved)
     result = executor.execute("file_creation", filename="out.txt", content="hi")
+
+    # With events
+    def on_event(event: dict) -> None:
+        print(event)
+
+    result = executor.execute(
+        "file_creation",
+        event_callback=on_event,
+        filename="out.txt",
+        content="hi",
+    )
     """
 
     def __init__(self, registry: ToolRegistry) -> None:
         self._registry = registry
 
     # ------------------------------------------------------------------ #
+    #  Internal helpers                                                    #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _emit(callback: EventCallback, event: dict) -> None:
+        """
+        Safely fire the callback with the event dict.
+
+        - Does nothing when callback is None.
+        - Swallows and logs any exception raised inside the callback so that
+          a buggy consumer can never crash the executor.
+        """
+        if callback is None:
+            return
+        try:
+            callback(event)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("event_callback raised an exception: %s", exc)
+
+    # ------------------------------------------------------------------ #
     #  Public API                                                          #
     # ------------------------------------------------------------------ #
 
-    def execute(self, tool_name: str, **kwargs: Any) -> ToolResult:
+    def execute(
+        self,
+        tool_name: str,
+        *,
+        event_callback: EventCallback = None,
+        **kwargs: Any,
+    ) -> ToolResult:
         """
         Execute a registered tool by name.
-
-        Steps
-        -----
-        1. Resolve the tool from the registry (unknown name → failure result).
-        2. Validate required inputs via the tool's own schema (missing fields
-           → failure result, no exception raised).
-        3. Call tool.execute(**kwargs).
-        4. Catch any unhandled exception from tool code and convert it to a
-           failure ToolResult so the caller always gets a structured response.
 
         Parameters
         ----------
         tool_name : str
             The `name` attribute of the target tool as registered.
+        event_callback : callable, optional
+            A function that accepts a single ``dict`` event argument.
+            Called at each stage of execution. Safe to omit.
         **kwargs : Any
             Input parameters forwarded verbatim to the tool.
 
@@ -81,46 +167,111 @@ class ToolExecutor:
             Always returned — never raises.
         """
 
-        # --- 1. Resolve tool -------------------------------------------- #
+        # ── Stage 1: tool_lookup_started ──────────────────────────────── #
         logger.info("Executor received request → tool=%r  inputs=%s",
                     tool_name, list(kwargs.keys()))
 
+        self._emit(callback=event_callback, event=_make_event(
+            type="info",
+            stage="tool_lookup_started",
+            message=f"Looking up tool '{tool_name}' in the registry.",
+            tool=tool_name,
+        ))
+
         tool = self._registry.get_or_none(tool_name)
+
         if tool is None:
             msg = (
-                f"Tool {tool_name!r} is not registered. "
+                f"Tool '{tool_name}' is not registered. "
                 f"Available: {self._registry.list_names()}"
             )
             logger.warning(msg)
+            self._emit(callback=event_callback, event=_make_event(
+                type="error",
+                stage="tool_lookup_failed",
+                message=msg,
+                tool=tool_name,
+            ))
             return ToolResult(success=False, error=msg)
 
-        # --- 2. Validate inputs ----------------------------------------- #
+        # ── Stage 2: tool_lookup_completed ────────────────────────────── #
+        self._emit(callback=event_callback, event=_make_event(
+            type="status",
+            stage="tool_lookup_completed",
+            message=f"Tool '{tool_name}' found successfully.",
+            tool=tool_name,
+        ))
+
+        # ── Stage 3: validation_started ───────────────────────────────── #
+        self._emit(callback=event_callback, event=_make_event(
+            type="info",
+            stage="validation_started",
+            message=f"Validating inputs for tool '{tool_name}'.",
+            tool=tool_name,
+        ))
+
         missing = tool.validate_inputs(kwargs)
+
         if missing:
-            msg = f"Missing required input(s) for {tool_name!r}: {', '.join(missing)}"
+            msg = f"Missing required input(s) for '{tool_name}': {', '.join(missing)}"
             logger.warning(msg)
+
+            # ── Stage 3a: validation_failed ───────────────────────────── #
+            self._emit(callback=event_callback, event=_make_event(
+                type="error",
+                stage="validation_failed",
+                message=msg,
+                tool=tool_name,
+            ))
             return ToolResult(success=False, error=msg)
 
-        # --- 3. Execute ------------------------------------------------- #
+        # ── Stage 4: execution_started ────────────────────────────────── #
+        self._emit(callback=event_callback, event=_make_event(
+            type="status",
+            stage="execution_started",
+            message=f"Executing tool '{tool_name}'.",
+            tool=tool_name,
+        ))
+
         try:
             result = tool.execute(**kwargs)
 
-        # --- 4. Safety net ---------------------------------------------- #
         except Exception as exc:  # noqa: BLE001
             tb = traceback.format_exc()
-            msg = f"Unexpected error in tool {tool_name!r}: {exc}"
+            msg = f"Unexpected error in tool '{tool_name}': {exc}"
             logger.error("%s\n%s", msg, tb)
+
+            # ── Stage 4a: execution_failed ────────────────────────────── #
+            self._emit(callback=event_callback, event=_make_event(
+                type="error",
+                stage="execution_failed",
+                message=msg,
+                tool=tool_name,
+            ))
             return ToolResult(
                 success=False,
                 error=msg,
                 metadata={"traceback": tb},
             )
 
+        # ── Stage 5: execution_completed ──────────────────────────────── #
         log_fn = logger.info if result.success else logger.warning
         log_fn(
             "Tool %r finished — success=%s  output=%r",
             tool_name, result.success, result.output,
         )
+
+        self._emit(callback=event_callback, event=_make_event(
+            type="status" if result.success else "error",
+            stage="execution_completed",
+            message=(
+                f"Tool '{tool_name}' completed successfully. Output: {result.output}"
+                if result.success
+                else f"Tool '{tool_name}' returned a failure: {result.error}"
+            ),
+            tool=tool_name,
+        ))
+
         return result
 
     # ------------------------------------------------------------------ #
@@ -132,10 +283,7 @@ class ToolExecutor:
         return self._registry.list_names()
 
     def tool_metadata(self) -> list[dict]:
-        """
-        Return structured metadata for every available tool.
-        This will be consumed by the agent layer to build the LLM tool list.
-        """
+        """Return structured metadata for every available tool."""
         return self._registry.list_metadata()
 
     def __repr__(self) -> str:
