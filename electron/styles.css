@@ -1,0 +1,376 @@
+/* ═══════════════════════════════════════════════════════════════════════
+   styles.css — Gladden AI Assistant Overlay
+   Aesthetic: Surgical minimalism with cold-neon accents on void-black glass
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ── Tokens ─────────────────────────────────────────────────────────────── */
+:root {
+  /* Colours */
+  --c-void:        #000000;
+  --c-glass:       rgba(8, 10, 16, 0.72);
+  --c-glass-hover: rgba(10, 13, 22, 0.82);
+  --c-border:      rgba(79, 195, 247, 0.12);
+  --c-border-hot:  rgba(79, 195, 247, 0.35);
+  --c-accent:      #4fc3f7;
+  --c-accent-dim:  rgba(79, 195, 247, 0.45);
+  --c-accent-glow: rgba(79, 195, 247, 0.18);
+  --c-text:        rgba(220, 235, 255, 0.92);
+  --c-text-dim:    rgba(160, 185, 215, 0.55);
+  --c-text-muted:  rgba(110, 140, 175, 0.4);
+  --c-success:     #69f0ae;
+  --c-error:       #ff5370;
+  --c-warn:        #ffcb6b;
+  --c-security:    #ce93d8;
+  --c-info:        #4fc3f7;
+  --c-status:      #69f0ae;
+
+  /* Spacing */
+  --bar-height:    56px;
+  --bar-padding:   0 14px;
+  --radius:        10px;
+  --radius-sm:     6px;
+
+  /* Typography */
+  --font-ui:       'Syne', 'Segoe UI', system-ui, sans-serif;
+  --font-mono:     'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace;
+
+  /* Timing */
+  --ease-out:      cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out:   cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ── Reset ──────────────────────────────────────────────────────────────── */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+/* ── Body — fully transparent, no pointer events ───────────────────────── */
+html, body {
+  width: 100vw;
+  height: 110px;
+  overflow: hidden;
+  background: transparent;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+  font-family: var(--font-ui);
+  color: var(--c-text);
+}
+
+/* ── App shell ──────────────────────────────────────────────────────────── */
+.app {
+  width: 100%;
+  padding: 8px 16px;
+  pointer-events: none;
+}
+
+/* ── Slide-down animation states ────────────────────────────────────────── */
+.app.hidden {
+  opacity: 0;
+  transform: translateY(-100%);
+  pointer-events: none;
+}
+
+.app.visible {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: none;     /* shell itself stays passthrough */
+  animation: slideDown 0.38s var(--ease-out) forwards;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-100%) scaleY(0.85);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scaleY(1);
+  }
+}
+
+/* ── Glass bar — the ONLY interactive zone ──────────────────────────────── */
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: var(--bar-height);
+  padding: var(--bar-padding);
+  background: var(--c-glass);
+  backdrop-filter: blur(24px) saturate(160%) brightness(1.05);
+  -webkit-backdrop-filter: blur(24px) saturate(160%) brightness(1.05);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+  box-shadow:
+    0 2px 32px rgba(0, 0, 0, 0.6),
+    0 0 0 1px rgba(255,255,255,0.03) inset,
+    0 1px 0 rgba(255,255,255,0.06) inset;
+  pointer-events: all;
+  transition:
+    border-color 0.25s var(--ease-in-out),
+    box-shadow   0.25s var(--ease-in-out);
+  will-change: transform;
+}
+
+.bar:hover,
+.bar:focus-within {
+  border-color: var(--c-border-hot);
+  box-shadow:
+    0 4px 40px rgba(0, 0, 0, 0.7),
+    0 0 20px var(--c-accent-glow),
+    0 0 0 1px rgba(255,255,255,0.04) inset,
+    0 1px 0 rgba(255,255,255,0.08) inset;
+}
+
+/* ── Logo mark ──────────────────────────────────────────────────────────── */
+.logo-mark {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  opacity: 0.85;
+  animation: pulse 3s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.7; }
+  50%       { opacity: 1; }
+}
+
+/* ── Input wrapper ──────────────────────────────────────────────────────── */
+.input-wrapper {
+  position: relative;
+  flex: 0 0 340px;     /* fixed width — not full-width, shares bar with logs */
+  min-width: 200px;
+}
+
+.cmd-input {
+  width: 100%;
+  height: 34px;
+  padding: 0 12px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(79, 195, 247, 0.15);
+  border-radius: var(--radius-sm);
+  color: var(--c-text);
+  font-family: var(--font-ui);
+  font-size: 13.5px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  outline: none;
+  caret-color: var(--c-accent);
+  transition:
+    border-color 0.2s,
+    background   0.2s,
+    box-shadow   0.2s;
+  -webkit-app-region: no-drag;
+}
+
+.cmd-input::placeholder {
+  color: var(--c-text-muted);
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+
+.cmd-input:focus {
+  background: rgba(0, 0, 0, 0.55);
+  border-color: var(--c-accent-dim);
+  box-shadow:
+    0 0 0 2px var(--c-accent-glow),
+    inset 0 1px 3px rgba(0,0,0,0.3);
+}
+
+/* Glow line under input on focus */
+.input-glow {
+  position: absolute;
+  bottom: -1px;
+  left: 10%;
+  width: 80%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--c-accent), transparent);
+  opacity: 0;
+  transition: opacity 0.25s;
+  pointer-events: none;
+}
+
+.cmd-input:focus ~ .input-glow {
+  opacity: 0.6;
+}
+
+/* ── Status dot ─────────────────────────────────────────────────────────── */
+.status-dot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  transition: background 0.3s, box-shadow 0.3s;
+}
+
+.status-dot.idle {
+  background: rgba(79, 195, 247, 0.3);
+  box-shadow: none;
+}
+
+.status-dot.loading {
+  background: var(--c-accent);
+  box-shadow: 0 0 8px var(--c-accent);
+  animation: blink 0.8s ease-in-out infinite;
+}
+
+.status-dot.success {
+  background: var(--c-success);
+  box-shadow: 0 0 8px var(--c-success);
+}
+
+.status-dot.error {
+  background: var(--c-error);
+  box-shadow: 0 0 8px var(--c-error);
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.3; }
+}
+
+/* ── Divider ────────────────────────────────────────────────────────────── */
+.divider {
+  flex-shrink: 0;
+  width: 1px;
+  height: 26px;
+  background: linear-gradient(180deg, transparent, var(--c-border-hot), transparent);
+}
+
+/* ── Log panel ──────────────────────────────────────────────────────────── */
+.log-panel {
+  flex: 1;
+  height: 38px;
+  overflow: hidden;
+  position: relative;
+}
+
+/* Fade edges */
+.log-panel::before,
+.log-panel::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  width: 28px;
+  height: 100%;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.log-panel::before {
+  left: 0;
+  background: linear-gradient(90deg, var(--c-glass), transparent);
+}
+
+.log-panel::after {
+  right: 0;
+  background: linear-gradient(270deg, var(--c-glass), transparent);
+}
+
+.log-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 3px 28px;
+  scroll-behavior: smooth;
+}
+
+/* Hide scrollbar visually */
+.log-inner::-webkit-scrollbar { display: none; }
+.log-inner { scrollbar-width: none; }
+
+.log-placeholder {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--c-text-muted);
+  letter-spacing: 0.03em;
+  line-height: 1.4;
+  font-style: italic;
+  padding-top: 10px;
+}
+
+/* ── Log entries ────────────────────────────────────────────────────────── */
+.log-entry {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.45;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  animation: entryFade 0.18s ease forwards;
+  opacity: 0;
+}
+
+@keyframes entryFade {
+  from { opacity: 0; transform: translateX(6px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+.log-ts {
+  color: var(--c-text-muted);
+  font-size: 9.5px;
+  letter-spacing: 0.01em;
+  flex-shrink: 0;
+}
+
+.log-stage {
+  font-weight: 500;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+.log-msg {
+  color: var(--c-text);
+  opacity: 0.78;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Type-based stage colours */
+.log-entry[data-type="info"]     .log-stage { color: var(--c-info); }
+.log-entry[data-type="status"]   .log-stage { color: var(--c-status); }
+.log-entry[data-type="error"]    .log-stage { color: var(--c-error); }
+.log-entry[data-type="security"] .log-stage { color: var(--c-security); }
+.log-entry[data-type="warn"]     .log-stage { color: var(--c-warn); }
+
+/* Final result banner */
+.log-entry.result-ok {
+  background: rgba(105, 240, 174, 0.06);
+  border-radius: 3px;
+  padding: 1px 4px;
+}
+
+.log-entry.result-err {
+  background: rgba(255, 83, 112, 0.07);
+  border-radius: 3px;
+  padding: 1px 4px;
+}
+
+/* ── Executing shimmer on input ─────────────────────────────────────────── */
+.cmd-input.executing {
+  background: rgba(79, 195, 247, 0.05);
+  border-color: var(--c-accent-dim);
+  animation: shimmer 1.4s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes shimmer {
+  0%   { box-shadow: 0 0 0 2px rgba(79,195,247,0.10), inset 0 1px 3px rgba(0,0,0,0.3); }
+  50%  { box-shadow: 0 0 0 2px rgba(79,195,247,0.28), inset 0 1px 3px rgba(0,0,0,0.3); }
+  100% { box-shadow: 0 0 0 2px rgba(79,195,247,0.10), inset 0 1px 3px rgba(0,0,0,0.3); }
+}

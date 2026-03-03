@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self'; connect-src http://localhost:8000;" />
+  <title>Gladden</title>
+
+  <!-- Distinctive font pairing: Syne (display) + JetBrains Mono (logs) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       OVERLAY SHELL
+       The entire body is transparent + click-through.
+       Only #interactive-zone captures mouse events.
+  ═══════════════════════════════════════════════════════════════════ -->
+
+  <div id="app" class="app hidden">
+
+    <!-- Glass bar ─────────────────────────────────────────────────── -->
+    <div id="interactive-zone" class="bar">
+
+      <!-- Glyph / logo mark -->
+      <div class="logo-mark" aria-hidden="true">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+          <circle cx="10" cy="10" r="8" stroke="#4fc3f7" stroke-width="1.5" stroke-dasharray="3 2"/>
+          <circle cx="10" cy="10" r="3" fill="#4fc3f7" opacity="0.9"/>
+        </svg>
+      </div>
+
+      <!-- Command input ─────────────────────────────────────────────── -->
+      <div class="input-wrapper">
+        <input
+          id="cmd-input"
+          type="text"
+          class="cmd-input"
+          placeholder="Ask Gladden..."
+          autocomplete="off"
+          spellcheck="false"
+          aria-label="Command input"
+        />
+        <div class="input-glow"></div>
+      </div>
+
+      <!-- Status indicator ─────────────────────────────────────────── -->
+      <div id="status-dot" class="status-dot idle" title="idle"></div>
+
+      <!-- Divider -->
+      <div class="divider" aria-hidden="true"></div>
+
+      <!-- Execution log ────────────────────────────────────────────── -->
+      <div id="log-panel" class="log-panel" role="log" aria-live="polite" aria-label="Execution log">
+        <div id="log-inner" class="log-inner">
+          <span class="log-placeholder">events will stream here…</span>
+        </div>
+      </div>
+
+    </div>
+    <!-- /bar -->
+
+  </div>
+  <!-- /app -->
+
+  <script src="renderer.js"></script>
+</body>
+</html>

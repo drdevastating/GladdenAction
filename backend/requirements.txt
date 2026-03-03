@@ -1,0 +1,24 @@
+# requirements.txt
+# Install with: pip install -r requirements.txt
+
+# Web framework
+fastapi>=0.111.0
+
+# ASGI server
+uvicorn[standard]>=0.29.0
+
+# Groq SDK — Llama 3.3 inference
+groq>=0.9.0
+
+# Desktop UI automation (pyautogui workflows)
+pyautogui>=0.9.54
+pyperclip>=1.8.2
+
+# Process management
+psutil>=5.9.0
+
+# Environment
+python-dotenv>=1.0.0
+
+# Typing backports
+typing-extensions>=4.11.0
