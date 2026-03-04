@@ -1,16 +1,13 @@
 /* ═══════════════════════════════════════════════════════════════════════
    styles.css — Gladden AI Assistant Overlay
-   Aesthetic: Surgical minimalism with cold-neon accents on void-black glass
    ═══════════════════════════════════════════════════════════════════════ */
 
-/* ── Tokens ─────────────────────────────────────────────────────────────── */
 :root {
-  /* Colours */
   --c-void:        #000000;
-  --c-glass:       rgba(8, 10, 16, 0.72);
-  --c-glass-hover: rgba(10, 13, 22, 0.82);
-  --c-border:      rgba(79, 195, 247, 0.12);
-  --c-border-hot:  rgba(79, 195, 247, 0.35);
+  --c-glass:       rgba(8, 10, 16, 0.82);
+  --c-glass-hover: rgba(10, 13, 22, 0.88);
+  --c-border:      rgba(79, 195, 247, 0.14);
+  --c-border-hot:  rgba(79, 195, 247, 0.38);
   --c-accent:      #4fc3f7;
   --c-accent-dim:  rgba(79, 195, 247, 0.45);
   --c-accent-glow: rgba(79, 195, 247, 0.18);
@@ -24,32 +21,23 @@
   --c-info:        #4fc3f7;
   --c-status:      #69f0ae;
 
-  /* Spacing */
   --bar-height:    56px;
-  --bar-padding:   0 14px;
-  --radius:        10px;
-  --radius-sm:     6px;
+  --log-height:    340px;
+  --radius:        12px;
+  --radius-sm:     7px;
 
-  /* Typography */
-  --font-ui:       'Syne', 'Segoe UI', system-ui, sans-serif;
-  --font-mono:     'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace;
+  --font-ui:   'Syne', 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace;
 
-  /* Timing */
-  --ease-out:      cubic-bezier(0.16, 1, 0.3, 1);
-  --ease-in-out:   cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-out:    cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-/* ── Reset ──────────────────────────────────────────────────────────────── */
-*, *::before, *::after {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-/* ── Body — fully transparent, no pointer events ───────────────────────── */
 html, body {
   width: 100vw;
-  height: 110px;
+  /* height is managed dynamically by JS via IPC resize */
   overflow: hidden;
   background: transparent;
   pointer-events: none;
@@ -62,63 +50,53 @@ html, body {
 /* ── App shell ──────────────────────────────────────────────────────────── */
 .app {
   width: 100%;
-  padding: 8px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
   pointer-events: none;
 }
 
-/* ── Slide-down animation states ────────────────────────────────────────── */
-.app.hidden {
-  opacity: 0;
-  transform: translateY(-100%);
-  pointer-events: none;
-}
-
-.app.visible {
-  opacity: 1;
-  transform: translateY(0);
-  pointer-events: none;     /* shell itself stays passthrough */
-  animation: slideDown 0.38s var(--ease-out) forwards;
-}
+.app.hidden  { opacity: 0; transform: translateY(-100%); pointer-events: none; }
+.app.visible { opacity: 1; transform: translateY(0);     pointer-events: none;
+               animation: slideDown 0.35s var(--ease-out) forwards; }
 
 @keyframes slideDown {
-  from {
-    opacity: 0;
-    transform: translateY(-100%) scaleY(0.85);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scaleY(1);
-  }
+  from { opacity: 0; transform: translateY(-60%) scaleY(0.9); }
+  to   { opacity: 1; transform: translateY(0)    scaleY(1);   }
 }
 
-/* ── Glass bar — the ONLY interactive zone ──────────────────────────────── */
+/* ── Input bar ──────────────────────────────────────────────────────────── */
 .bar {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   height: var(--bar-height);
-  padding: var(--bar-padding);
+  padding: 0 16px;
   background: var(--c-glass);
-  backdrop-filter: blur(24px) saturate(160%) brightness(1.05);
-  -webkit-backdrop-filter: blur(24px) saturate(160%) brightness(1.05);
+  backdrop-filter: blur(28px) saturate(160%) brightness(1.05);
+  -webkit-backdrop-filter: blur(28px) saturate(160%) brightness(1.05);
   border: 1px solid var(--c-border);
   border-radius: var(--radius);
   box-shadow:
-    0 2px 32px rgba(0, 0, 0, 0.6),
+    0 2px 32px rgba(0,0,0,0.65),
     0 0 0 1px rgba(255,255,255,0.03) inset,
     0 1px 0 rgba(255,255,255,0.06) inset;
   pointer-events: all;
-  transition:
-    border-color 0.25s var(--ease-in-out),
-    box-shadow   0.25s var(--ease-in-out);
-  will-change: transform;
+  transition: border-color 0.25s var(--ease-in-out), box-shadow 0.25s var(--ease-in-out);
+  /* when log is open, square off bottom corners */
+  transition: border-radius 0.2s var(--ease-in-out), border-color 0.25s, box-shadow 0.25s;
 }
 
-.bar:hover,
-.bar:focus-within {
+.bar.log-open {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  border-bottom-color: rgba(79, 195, 247, 0.06);
+}
+
+.bar:hover, .bar:focus-within {
   border-color: var(--c-border-hot);
   box-shadow:
-    0 4px 40px rgba(0, 0, 0, 0.7),
+    0 4px 40px rgba(0,0,0,0.7),
     0 0 20px var(--c-accent-glow),
     0 0 0 1px rgba(255,255,255,0.04) inset,
     0 1px 0 rgba(255,255,255,0.08) inset;
@@ -127,33 +105,25 @@ html, body {
 /* ── Logo mark ──────────────────────────────────────────────────────────── */
 .logo-mark {
   flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
+  display: flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px;
   opacity: 0.85;
   animation: pulse 3s ease-in-out infinite;
 }
+@keyframes pulse { 0%,100%{opacity:0.7} 50%{opacity:1} }
 
-@keyframes pulse {
-  0%, 100% { opacity: 0.7; }
-  50%       { opacity: 1; }
-}
-
-/* ── Input wrapper ──────────────────────────────────────────────────────── */
+/* ── Input ──────────────────────────────────────────────────────────────── */
 .input-wrapper {
   position: relative;
-  flex: 0 0 340px;     /* fixed width — not full-width, shares bar with logs */
-  min-width: 200px;
+  flex: 1;
 }
 
 .cmd-input {
   width: 100%;
   height: 34px;
   padding: 0 12px;
-  background: rgba(0, 0, 0, 0.35);
-  border: 1px solid rgba(79, 195, 247, 0.15);
+  background: rgba(0,0,0,0.35);
+  border: 1px solid rgba(79,195,247,0.15);
   border-radius: var(--radius-sm);
   color: var(--c-text);
   font-family: var(--font-ui);
@@ -162,215 +132,193 @@ html, body {
   letter-spacing: 0.01em;
   outline: none;
   caret-color: var(--c-accent);
-  transition:
-    border-color 0.2s,
-    background   0.2s,
-    box-shadow   0.2s;
+  transition: border-color 0.2s, background 0.2s, box-shadow 0.2s;
   -webkit-app-region: no-drag;
 }
-
-.cmd-input::placeholder {
-  color: var(--c-text-muted);
-  font-weight: 400;
-  letter-spacing: 0.02em;
-}
-
+.cmd-input::placeholder { color: var(--c-text-muted); font-weight: 400; }
 .cmd-input:focus {
-  background: rgba(0, 0, 0, 0.55);
+  background: rgba(0,0,0,0.55);
   border-color: var(--c-accent-dim);
-  box-shadow:
-    0 0 0 2px var(--c-accent-glow),
-    inset 0 1px 3px rgba(0,0,0,0.3);
+  box-shadow: 0 0 0 2px var(--c-accent-glow), inset 0 1px 3px rgba(0,0,0,0.3);
 }
-
-/* Glow line under input on focus */
-.input-glow {
-  position: absolute;
-  bottom: -1px;
-  left: 10%;
-  width: 80%;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, var(--c-accent), transparent);
-  opacity: 0;
-  transition: opacity 0.25s;
+.cmd-input.executing {
+  background: rgba(79,195,247,0.05);
+  border-color: var(--c-accent-dim);
+  animation: shimmer 1.4s linear infinite;
   pointer-events: none;
 }
-
-.cmd-input:focus ~ .input-glow {
-  opacity: 0.6;
+@keyframes shimmer {
+  0%,100% { box-shadow: 0 0 0 2px rgba(79,195,247,0.10), inset 0 1px 3px rgba(0,0,0,0.3); }
+  50%     { box-shadow: 0 0 0 2px rgba(79,195,247,0.28), inset 0 1px 3px rgba(0,0,0,0.3); }
 }
+
+.input-glow {
+  position: absolute; bottom: -1px; left: 10%; width: 80%; height: 1px;
+  background: linear-gradient(90deg, transparent, var(--c-accent), transparent);
+  opacity: 0; transition: opacity 0.25s; pointer-events: none;
+}
+.cmd-input:focus ~ .input-glow { opacity: 0.6; }
 
 /* ── Status dot ─────────────────────────────────────────────────────────── */
 .status-dot {
-  flex-shrink: 0;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
+  flex-shrink: 0; width: 8px; height: 8px; border-radius: 50%;
   transition: background 0.3s, box-shadow 0.3s;
 }
+.status-dot.idle    { background: rgba(79,195,247,0.3); }
+.status-dot.loading { background: var(--c-accent); box-shadow: 0 0 8px var(--c-accent); animation: blink 0.8s ease-in-out infinite; }
+.status-dot.success { background: var(--c-success); box-shadow: 0 0 8px var(--c-success); }
+.status-dot.error   { background: var(--c-error);   box-shadow: 0 0 8px var(--c-error); }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
 
-.status-dot.idle {
-  background: rgba(79, 195, 247, 0.3);
-  box-shadow: none;
-}
+/* ═══════════════════════════════════════════════════════════════════════════
+   LOG PANEL — expands below the bar
+   ═════════════════════════════════════════════════════════════════════════ */
 
-.status-dot.loading {
-  background: var(--c-accent);
-  box-shadow: 0 0 8px var(--c-accent);
-  animation: blink 0.8s ease-in-out infinite;
-}
-
-.status-dot.success {
-  background: var(--c-success);
-  box-shadow: 0 0 8px var(--c-success);
-}
-
-.status-dot.error {
-  background: var(--c-error);
-  box-shadow: 0 0 8px var(--c-error);
-}
-
-@keyframes blink {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0.3; }
-}
-
-/* ── Divider ────────────────────────────────────────────────────────────── */
-.divider {
-  flex-shrink: 0;
-  width: 1px;
-  height: 26px;
-  background: linear-gradient(180deg, transparent, var(--c-border-hot), transparent);
-}
-
-/* ── Log panel ──────────────────────────────────────────────────────────── */
 .log-panel {
-  flex: 1;
-  height: 38px;
-  overflow: hidden;
-  position: relative;
-}
-
-/* Fade edges */
-.log-panel::before,
-.log-panel::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  width: 28px;
-  height: 100%;
-  z-index: 2;
-  pointer-events: none;
-}
-
-.log-panel::before {
-  left: 0;
-  background: linear-gradient(90deg, var(--c-glass), transparent);
-}
-
-.log-panel::after {
-  right: 0;
-  background: linear-gradient(270deg, var(--c-glass), transparent);
-}
-
-.log-inner {
+  background: rgba(6, 8, 14, 0.93);
+  backdrop-filter: blur(28px) saturate(140%);
+  -webkit-backdrop-filter: blur(28px) saturate(140%);
+  border: 1px solid var(--c-border);
+  border-top: none;
+  border-bottom-left-radius: var(--radius);
+  border-bottom-right-radius: var(--radius);
+  box-shadow: 0 8px 40px rgba(0,0,0,0.7), 0 0 0 1px rgba(255,255,255,0.02) inset;
+  pointer-events: all;
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  height: 100%;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 3px 28px;
-  scroll-behavior: smooth;
+  overflow: hidden;
+
+  /* Collapsed state */
+  max-height: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    max-height 0.4s var(--ease-out),
+    opacity    0.3s var(--ease-out);
 }
 
-/* Hide scrollbar visually */
-.log-inner::-webkit-scrollbar { display: none; }
-.log-inner { scrollbar-width: none; }
+.log-panel.expanded {
+  max-height: var(--log-height);
+  opacity: 1;
+  pointer-events: all;
+}
 
-.log-placeholder {
-  display: block;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
+/* ── Log header ─────────────────────────────────────────────────────────── */
+.log-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px 6px;
+  border-bottom: 1px solid rgba(79,195,247,0.08);
+  flex-shrink: 0;
+}
+
+.log-panel-title {
+  font-family: var(--font-ui);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--c-accent-dim);
+}
+
+.log-close-btn {
+  background: none;
+  border: none;
   color: var(--c-text-muted);
-  letter-spacing: 0.03em;
-  line-height: 1.4;
-  font-style: italic;
-  padding-top: 10px;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  line-height: 1;
+  transition: color 0.15s, background 0.15s;
+  pointer-events: all;
+}
+.log-close-btn:hover {
+  color: var(--c-text);
+  background: rgba(255,255,255,0.06);
 }
 
 /* ── Log entries ────────────────────────────────────────────────────────── */
-.log-entry {
+.log-inner {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 10px 16px 14px;
   display: flex;
-  align-items: baseline;
-  gap: 7px;
+  flex-direction: column;
+  gap: 3px;
+  scroll-behavior: smooth;
+}
+.log-inner::-webkit-scrollbar { width: 3px; }
+.log-inner::-webkit-scrollbar-track { background: transparent; }
+.log-inner::-webkit-scrollbar-thumb { background: rgba(79,195,247,0.2); border-radius: 2px; }
+
+.log-placeholder {
   font-family: var(--font-mono);
-  font-size: 10.5px;
-  line-height: 1.45;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  animation: entryFade 0.18s ease forwards;
+  font-size: 11px;
+  color: var(--c-text-muted);
+  font-style: italic;
+  padding-top: 6px;
+}
+
+.log-entry {
+  display: grid;
+  grid-template-columns: 52px 160px 1fr;
+  gap: 8px;
+  align-items: baseline;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.55;
+  padding: 1px 0;
+  animation: entryFade 0.15s ease forwards;
   opacity: 0;
+  border-radius: 3px;
 }
 
 @keyframes entryFade {
-  from { opacity: 0; transform: translateX(6px); }
+  from { opacity: 0; transform: translateX(8px); }
   to   { opacity: 1; transform: translateX(0); }
 }
 
 .log-ts {
   color: var(--c-text-muted);
-  font-size: 9.5px;
+  font-size: 10px;
   letter-spacing: 0.01em;
-  flex-shrink: 0;
 }
 
 .log-stage {
   font-weight: 500;
-  font-size: 10px;
-  letter-spacing: 0.04em;
+  font-size: 10.5px;
+  letter-spacing: 0.03em;
   text-transform: uppercase;
-  flex-shrink: 0;
-}
-
-.log-msg {
-  color: var(--c-text);
-  opacity: 0.78;
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* Type-based stage colours */
+.log-msg {
+  color: var(--c-text);
+  opacity: 0.8;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+/* Type colours */
 .log-entry[data-type="info"]     .log-stage { color: var(--c-info); }
 .log-entry[data-type="status"]   .log-stage { color: var(--c-status); }
 .log-entry[data-type="error"]    .log-stage { color: var(--c-error); }
 .log-entry[data-type="security"] .log-stage { color: var(--c-security); }
 .log-entry[data-type="warn"]     .log-stage { color: var(--c-warn); }
 
-/* Final result banner */
-.log-entry.result-ok {
-  background: rgba(105, 240, 174, 0.06);
-  border-radius: 3px;
-  padding: 1px 4px;
-}
+/* Result banners */
+.log-entry.result-ok  { background: rgba(105,240,174,0.06); padding: 3px 8px; }
+.log-entry.result-err { background: rgba(255,83,112,0.07);  padding: 3px 8px; }
 
-.log-entry.result-err {
-  background: rgba(255, 83, 112, 0.07);
-  border-radius: 3px;
-  padding: 1px 4px;
-}
-
-/* ── Executing shimmer on input ─────────────────────────────────────────── */
-.cmd-input.executing {
-  background: rgba(79, 195, 247, 0.05);
-  border-color: var(--c-accent-dim);
-  animation: shimmer 1.4s linear infinite;
-  pointer-events: none;
-}
-
-@keyframes shimmer {
-  0%   { box-shadow: 0 0 0 2px rgba(79,195,247,0.10), inset 0 1px 3px rgba(0,0,0,0.3); }
-  50%  { box-shadow: 0 0 0 2px rgba(79,195,247,0.28), inset 0 1px 3px rgba(0,0,0,0.3); }
-  100% { box-shadow: 0 0 0 2px rgba(79,195,247,0.10), inset 0 1px 3px rgba(0,0,0,0.3); }
+/* Separator line between events and final result */
+.log-separator {
+  height: 1px;
+  background: rgba(79,195,247,0.08);
+  margin: 6px 0;
+  flex-shrink: 0;
 }

@@ -1,64 +1,36 @@
-/**
- * main.js
- * Gladden AI Assistant — Electron Main Process
- *
- * Responsibilities:
- *  - Create a frameless, transparent, always-on-top overlay window
- *  - Register global hotkeys (Escape to hide, Ctrl+Space to toggle)
- *  - Prevent multiple instances via single-instance lock
- *  - Enable click-through on transparent areas
- *  - Handle IPC for backend communication proxy (optional)
- */
-
-/**
- * main.js
- * Gladden AI Assistant — Electron Main Process
- */
-
 'use strict';
 
-const {
-  app,
-  BrowserWindow,
-  globalShortcut,
-  ipcMain,
-  screen,
-} = require('electron');
-
+const { app, BrowserWindow, globalShortcut, ipcMain, screen } = require('electron');
 const path = require('path');
 
-// ── Single-instance lock ────────────────────────────────────────────────── //
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) { app.quit(); process.exit(0); }
 
-// ── State ───────────────────────────────────────────────────────────────── //
 let mainWindow = null;
 let isVisible  = true;
 
-// ── Window factory ──────────────────────────────────────────────────────── //
 function createWindow() {
   const { width: screenWidth } = screen.getPrimaryDisplay().workAreaSize;
 
-  // Narrow centered overlay
   const winWidth = 700;
   const winX     = Math.round((screenWidth - winWidth) / 2);
 
   mainWindow = new BrowserWindow({
     width:  winWidth,
-    height: 110,
+    height: 72,   // bar (56) + padding (16) — renderer will resize as needed
     x:      winX,
     y:      0,
 
-    frame:            false,
-    transparent:      true,
-    backgroundColor:  '#00000000',
-    resizable:        false,
-    movable:          false,
-    minimizable:      false,
-    maximizable:      false,
-    fullscreenable:   false,
-    skipTaskbar:      true,
-    alwaysOnTop:      true,
+    frame:           false,
+    transparent:     true,
+    backgroundColor: '#00000000',
+    resizable:       false,
+    movable:         false,
+    minimizable:     false,
+    maximizable:     false,
+    fullscreenable:  false,
+    skipTaskbar:     true,
+    alwaysOnTop:     true,
     visibleOnAllWorkspaces: true,
 
     webPreferences: {
@@ -71,8 +43,6 @@ function createWindow() {
 
   mainWindow.loadFile('index.html');
   mainWindow.setAlwaysOnTop(true, 'screen-saver');
-
-  // Start with click-through OFF so the bar is immediately clickable
   mainWindow.setIgnoreMouseEvents(false);
 
   if (process.argv.includes('--dev')) {
@@ -82,11 +52,10 @@ function createWindow() {
   mainWindow.on('closed', () => { mainWindow = null; });
 }
 
-// ── IPC: mouse-capture toggle ───────────────────────────────────────────── //
+/* ── IPC handlers ───────────────────────────────────────────────────────── */
+
 ipcMain.on('set-ignore-mouse-events', (event, ignore, opts) => {
-  if (mainWindow) {
-    mainWindow.setIgnoreMouseEvents(ignore, opts || {});
-  }
+  if (mainWindow) mainWindow.setIgnoreMouseEvents(ignore, opts || {});
 });
 
 ipcMain.on('hide-window', () => {
@@ -97,14 +66,23 @@ ipcMain.on('show-window', () => {
   if (mainWindow) { mainWindow.show(); isVisible = true; }
 });
 
-// ── App lifecycle ───────────────────────────────────────────────────────── //
+ipcMain.on('resize-window', (event, height) => {
+  if (!mainWindow) return;
+  const { width: screenWidth } = screen.getPrimaryDisplay().workAreaSize;
+  const winWidth = 700;
+  const winX     = Math.round((screenWidth - winWidth) / 2);
+  // Clamp height to something sensible
+  const h = Math.max(72, Math.min(height, 600));
+  mainWindow.setBounds({ x: winX, y: 0, width: winWidth, height: h }, true); // true = animate
+});
+
+/* ── App lifecycle ──────────────────────────────────────────────────────── */
+
 app.whenReady().then(() => {
   createWindow();
 
   globalShortcut.register('Escape', () => {
-    if (mainWindow && isVisible) {
-      mainWindow.webContents.send('trigger-hide');
-    }
+    if (mainWindow && isVisible) mainWindow.webContents.send('trigger-hide');
   });
 
   globalShortcut.register('CommandOrControl+Space', () => {
@@ -125,14 +103,8 @@ app.whenReady().then(() => {
 });
 
 app.on('second-instance', () => {
-  if (mainWindow) {
-    if (!mainWindow.isVisible()) mainWindow.show();
-    mainWindow.focus();
-  }
+  if (mainWindow) { if (!mainWindow.isVisible()) mainWindow.show(); mainWindow.focus(); }
 });
 
 app.on('will-quit', () => { globalShortcut.unregisterAll(); });
-
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
-});
+app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
