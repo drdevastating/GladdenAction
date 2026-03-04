@@ -10,6 +10,11 @@
  *  - Handle IPC for backend communication proxy (optional)
  */
 
+/**
+ * main.js
+ * Gladden AI Assistant — Electron Main Process
+ */
+
 'use strict';
 
 const {
@@ -18,18 +23,13 @@ const {
   globalShortcut,
   ipcMain,
   screen,
-  shell,
 } = require('electron');
 
 const path = require('path');
 
 // ── Single-instance lock ────────────────────────────────────────────────── //
 const gotLock = app.requestSingleInstanceLock();
-
-if (!gotLock) {
-  app.quit();
-  process.exit(0);
-}
+if (!gotLock) { app.quit(); process.exit(0); }
 
 // ── State ───────────────────────────────────────────────────────────────── //
 let mainWindow = null;
@@ -39,14 +39,16 @@ let isVisible  = true;
 function createWindow() {
   const { width: screenWidth } = screen.getPrimaryDisplay().workAreaSize;
 
+  // Narrow centered overlay
+  const winWidth = 700;
+  const winX     = Math.round((screenWidth - winWidth) / 2);
+
   mainWindow = new BrowserWindow({
-    // ── Geometry ───────────────────────────────────────────────────── //
-    width:  screenWidth,
+    width:  winWidth,
     height: 110,
-    x:      0,
+    x:      winX,
     y:      0,
 
-    // ── Chrome ─────────────────────────────────────────────────────── //
     frame:            false,
     transparent:      true,
     backgroundColor:  '#00000000',
@@ -56,12 +58,9 @@ function createWindow() {
     maximizable:      false,
     fullscreenable:   false,
     skipTaskbar:      true,
-
-    // ── Always on top — "screen-saver" level keeps it above fullscreen //
     alwaysOnTop:      true,
     visibleOnAllWorkspaces: true,
 
-    // ── Security ───────────────────────────────────────────────────── //
     webPreferences: {
       preload:          path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -70,63 +69,44 @@ function createWindow() {
     },
   });
 
-  // Render the UI
   mainWindow.loadFile('index.html');
-
-  // Set the window to be on the very top level
   mainWindow.setAlwaysOnTop(true, 'screen-saver');
 
-  // ── Click-through on transparent areas ─────────────────────────── //
-  // The renderer will send mouse-region updates; default: click-through
-  mainWindow.setIgnoreMouseEvents(true, { forward: true });
+  // Start with click-through OFF so the bar is immediately clickable
+  mainWindow.setIgnoreMouseEvents(false);
 
-  // ── Open DevTools in dev mode ───────────────────────────────────── //
   if (process.argv.includes('--dev')) {
     mainWindow.webContents.openDevTools({ mode: 'detach' });
   }
 
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-  });
+  mainWindow.on('closed', () => { mainWindow = null; });
 }
 
-// ── IPC: toggle mouse-capture region ───────────────────────────────────── //
-// Renderer calls ipcRenderer.send('set-ignore-mouse-events', bool)
-ipcMain.on('set-ignore-mouse-events', (event, ignore) => {
+// ── IPC: mouse-capture toggle ───────────────────────────────────────────── //
+ipcMain.on('set-ignore-mouse-events', (event, ignore, opts) => {
   if (mainWindow) {
-    mainWindow.setIgnoreMouseEvents(ignore, { forward: true });
+    mainWindow.setIgnoreMouseEvents(ignore, opts || {});
   }
 });
 
-// IPC: hide window
 ipcMain.on('hide-window', () => {
-  if (mainWindow) {
-    mainWindow.hide();
-    isVisible = false;
-  }
+  if (mainWindow) { mainWindow.hide(); isVisible = false; }
 });
 
-// IPC: show window
 ipcMain.on('show-window', () => {
-  if (mainWindow) {
-    mainWindow.show();
-    isVisible = true;
-  }
+  if (mainWindow) { mainWindow.show(); isVisible = true; }
 });
 
 // ── App lifecycle ───────────────────────────────────────────────────────── //
 app.whenReady().then(() => {
   createWindow();
 
-  // ── Global shortcuts ──────────────────────────────────────────── //
-  // Escape → hide overlay
   globalShortcut.register('Escape', () => {
     if (mainWindow && isVisible) {
       mainWindow.webContents.send('trigger-hide');
     }
   });
 
-  // Ctrl+Space → toggle visibility
   globalShortcut.register('CommandOrControl+Space', () => {
     if (!mainWindow) return;
     if (isVisible) {
@@ -145,18 +125,14 @@ app.whenReady().then(() => {
 });
 
 app.on('second-instance', () => {
-  // Focus existing window if user tries to open a second instance
   if (mainWindow) {
     if (!mainWindow.isVisible()) mainWindow.show();
     mainWindow.focus();
   }
 });
 
-app.on('will-quit', () => {
-  globalShortcut.unregisterAll();
-});
+app.on('will-quit', () => { globalShortcut.unregisterAll(); });
 
-// Keep the app alive even if all windows are closed (macOS behaviour)
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
