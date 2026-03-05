@@ -19,7 +19,7 @@ function createWindow() {
     width:  winWidth,
     height: 72,   // bar (56) + padding (16) — renderer will resize as needed
     x:      winX,
-    y:      0,
+    y:      6,
 
     frame:           false,
     transparent:     true,
@@ -73,7 +73,7 @@ ipcMain.on('resize-window', (event, height) => {
   const winX     = Math.round((screenWidth - winWidth) / 2);
   // Clamp height to something sensible
   const h = Math.max(72, Math.min(height, 600));
-  mainWindow.setBounds({ x: winX, y: 0, width: winWidth, height: h }, true); // true = animate
+  mainWindow.setBounds({ x: winX, y: 6, width: winWidth, height: h }, true); // true = animate
 });
 
 /* ── App lifecycle ──────────────────────────────────────────────────────── */

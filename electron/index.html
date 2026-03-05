@@ -9,20 +9,32 @@
   <title>Gladden</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
 
   <div id="app" class="app hidden">
 
-    <!-- Input bar (always visible when overlay is open) -->
+    <!-- Input bar -->
     <div id="interactive-zone" class="bar">
 
       <div class="logo-mark" aria-hidden="true">
-        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-          <circle cx="10" cy="10" r="8" stroke="#4fc3f7" stroke-width="1.5" stroke-dasharray="3 2"/>
-          <circle cx="10" cy="10" r="3" fill="#4fc3f7" opacity="0.9"/>
+        <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+          <!-- Outer dashed orbit -->
+          <circle cx="11" cy="11" r="9.5"
+                  stroke="#38d9f5" stroke-width="1"
+                  stroke-dasharray="2.5 2"
+                  opacity="0.45"/>
+          <!-- Inner orbit -->
+          <circle cx="11" cy="11" r="5.5"
+                  stroke="#a78bfa" stroke-width="1"
+                  stroke-dasharray="4 2.5"
+                  opacity="0.55"/>
+          <!-- Core dot -->
+          <circle cx="11" cy="11" r="2.5" fill="#38d9f5" opacity="0.95"/>
+          <!-- Bright highlight -->
+          <circle cx="10.2" cy="10.2" r="0.8" fill="white" opacity="0.6"/>
         </svg>
       </div>
 
@@ -44,7 +56,7 @@
     </div>
     <!-- /bar -->
 
-    <!-- Log panel — expands below the bar after execution -->
+    <!-- Log panel -->
     <div id="log-panel" class="log-panel collapsed" role="log" aria-live="polite">
       <div class="log-panel-header">
         <span class="log-panel-title">Execution Log</span>
