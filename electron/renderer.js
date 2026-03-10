@@ -1,6 +1,8 @@
 'use strict';
 
-const BACKEND_URL = 'http://localhost:8000/execute';
+const BACKEND_URL       = 'http://localhost:8000/execute';
+const VOICE_LISTEN_URL  = 'http://localhost:8000/voice/listen';
+const VOICE_CHECK_URL   = 'http://localhost:8000/voice/check';
 
 /* ── DOM refs ───────────────────────────────────────────────────────────── */
 const app        = document.getElementById('app');
@@ -10,15 +12,43 @@ const logPanel   = document.getElementById('log-panel');
 const logInner   = document.getElementById('log-inner');
 const statusDot  = document.getElementById('status-dot');
 const closeBtn   = document.getElementById('log-close-btn');
+const micBtn     = document.getElementById('mic-btn');
+const micRipple  = document.getElementById('mic-ripple');
+const micWaves   = document.getElementById('mic-waves');
 
 /* ── Constants ──────────────────────────────────────────────────────────── */
-const BAR_HEIGHT = 56;   // px — matches --bar-height in CSS
-const LOG_HEIGHT = 340;  // px — matches --log-height in CSS
-const PADDING    = 16;   // px — vertical padding
+const BAR_HEIGHT = 56;
+const LOG_HEIGHT = 340;
+const PADDING    = 16;
 
 /* ── State ──────────────────────────────────────────────────────────────── */
-let isExecuting = false;
-let logOpen     = false;
+let isExecuting   = false;
+let isListening   = false;
+let logOpen       = false;
+let voiceReady    = false;  // true if backend voice deps are installed
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   VOICE READINESS CHECK
+   ═════════════════════════════════════════════════════════════════════════ */
+
+async function checkVoiceReady() {
+  try {
+    const res = await fetch(VOICE_CHECK_URL);
+    if (!res.ok) return;
+    const data = await res.json();
+    voiceReady = data.ready === true;
+    if (voiceReady) {
+      micBtn.classList.add('ready');
+      micBtn.title = 'Voice command (click or hold Space)';
+    } else {
+      micBtn.classList.add('not-ready');
+      micBtn.title = 'Voice unavailable — install: pip install faster-whisper sounddevice';
+    }
+  } catch (_) {
+    micBtn.classList.add('not-ready');
+    micBtn.title = 'Backend not reachable';
+  }
+}
 
 /* ═══════════════════════════════════════════════════════════════════════════
    LOG PANEL OPEN / CLOSE
@@ -64,11 +94,11 @@ window.addEventListener('DOMContentLoaded', () => {
   showOverlay();
   window.gladden.resizeWindow(BAR_HEIGHT + PADDING);
   input.focus();
+  checkVoiceReady();
 });
 
 window.gladden.onTriggerHide(() => hideOverlay());
 window.gladden.onTriggerShow(() => { showOverlay(); input.focus(); });
-
 window.gladden.setIgnoreMouseEvents(false);
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -78,7 +108,7 @@ window.gladden.setIgnoreMouseEvents(false);
 input.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
     e.preventDefault();
-    if (!isExecuting) {
+    if (!isExecuting && !isListening) {
       const instruction = input.value.trim();
       if (instruction) executeInstruction(instruction);
     }
@@ -90,12 +120,118 @@ input.addEventListener('keydown', (e) => {
   }
 });
 
+/* Space bar = push-to-talk (only when input is NOT focused) */
+window.addEventListener('keydown', (e) => {
+  if (e.key === ' ' && document.activeElement !== input && !isExecuting && !isListening) {
+    e.preventDefault();
+    startVoiceListening();
+  }
+});
+
 bar.addEventListener('click', (e) => {
-  if (e.target !== input) input.focus();
+  if (e.target !== input && e.target !== micBtn && !micBtn.contains(e.target)) {
+    input.focus();
+  }
+});
+
+/* ── Mic button ─────────────────────────────────────────────────────────── */
+micBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (isListening || isExecuting) return;
+  startVoiceListening();
 });
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   EXECUTION
+   VOICE LISTENING
+   ═════════════════════════════════════════════════════════════════════════ */
+
+function setMicState(state) {
+  // state: 'idle' | 'listening' | 'processing' | 'done' | 'error'
+  micBtn.setAttribute('data-state', state);
+
+  if (state === 'listening') {
+    micBtn.classList.add('active');
+    micRipple.classList.add('pulsing');
+    micWaves.classList.add('animating');
+  } else {
+    micBtn.classList.remove('active');
+    micRipple.classList.remove('pulsing');
+    micWaves.classList.remove('animating');
+  }
+}
+
+async function startVoiceListening() {
+  if (isListening || isExecuting) return;
+  if (!voiceReady) {
+    appendLogEntry({ type: 'error', stage: 'voice_unavailable', message: 'Voice deps not installed. Run: pip install faster-whisper sounddevice' });
+    openLog();
+    return;
+  }
+
+  isListening = true;
+  input.classList.add('voice-active');
+  input.value = '';
+  input.placeholder = 'Listening…';
+  setMicState('listening');
+  setStatus('loading');
+  clearLog();
+  openLog();
+
+  appendLogEntry({ type: 'info', stage: 'voice_start', message: '🎤 Recording — speak your command…' });
+
+  try {
+    const response = await fetch(VOICE_LISTEN_URL, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ model_size: 'base', max_duration: 10.0 }),
+    });
+
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+
+    setMicState('processing');
+    input.placeholder = 'Processing…';
+
+    const data = await response.json();
+
+    if (data.transcript) {
+      input.value = data.transcript;
+      appendLogEntry({ type: 'status', stage: 'transcribed', message: '🗣 "' + data.transcript + '"' });
+    }
+
+    if (!data.success) {
+      appendSeparator();
+      appendLogEntry({ type: 'error', stage: 'voice_failed', message: data.error || 'Voice command failed.', className: 'result-err' });
+      setStatus('error');
+    } else {
+      if (Array.isArray(data.events) && data.events.length > 0) {
+        appendSeparator();
+        await streamEvents(data.events);
+      }
+      appendSeparator();
+      appendLogEntry({ type: 'status', stage: 'done', message: data.output || 'Completed.', className: 'result-ok' });
+      setStatus('success');
+    }
+
+  } catch (err) {
+    const isConnErr = err.message.includes('Failed to fetch') || err.message.includes('ERR_CONNECTION_REFUSED');
+    appendSeparator();
+    appendLogEntry({
+      type: 'error', stage: 'network_error',
+      message: isConnErr ? 'Backend not reachable — is the Python server running on :8000?' : err.message,
+      className: 'result-err',
+    });
+    setStatus('error');
+  } finally {
+    isListening = false;
+    input.classList.remove('voice-active');
+    input.placeholder = 'Ask Gladden…';
+    setMicState('idle');
+    setTimeout(() => setStatus('idle'), 4000);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   TEXT EXECUTION
    ═════════════════════════════════════════════════════════════════════════ */
 
 async function executeInstruction(instruction) {
