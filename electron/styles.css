@@ -1,18 +1,17 @@
 /* ═══════════════════════════════════════════════════════════════════════
-   styles.css — Gladden AI Assistant Overlay
+   styles.css — Gladden AI Assistant Overlay  (voice-enabled)
    ═══════════════════════════════════════════════════════════════════════ */
 
 @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
 
 :root {
-  /* Core palette — richer, more saturated but still dark/glass */
   --c-void:        #000000;
   --c-glass:       rgba(7, 9, 18, 0.86);
   --c-glass-hover: rgba(10, 13, 26, 0.92);
   --c-border:      rgba(82, 200, 255, 0.18);
   --c-border-hot:  rgba(82, 200, 255, 0.55);
-  --c-accent:      #38d9f5;          /* brighter cyan */
-  --c-accent-2:    #a78bfa;          /* soft violet accent */
+  --c-accent:      #38d9f5;
+  --c-accent-2:    #a78bfa;
   --c-accent-dim:  rgba(56, 217, 245, 0.55);
   --c-accent-glow: rgba(56, 217, 245, 0.22);
   --c-accent-glow2:rgba(167, 139, 250, 0.15);
@@ -25,6 +24,13 @@
   --c-security:    #d8a8ff;
   --c-info:        #38d9f5;
   --c-status:      #4fffb0;
+
+  /* Voice palette */
+  --c-mic-idle:      rgba(56, 217, 245, 0.45);
+  --c-mic-ready:     rgba(56, 217, 245, 0.75);
+  --c-mic-active:    #38d9f5;
+  --c-mic-wave:      #38d9f5;
+  --c-mic-no-ready:  rgba(110, 145, 180, 0.35);
 
   --bar-height:    56px;
   --log-height:    340px;
@@ -74,35 +80,29 @@ html, body {
 .bar {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   height: var(--bar-height);
-  padding: 0 16px;
+  padding: 0 14px;
   position: relative;
   background: var(--c-glass);
   backdrop-filter: blur(32px) saturate(180%) brightness(1.08);
   -webkit-backdrop-filter: blur(32px) saturate(180%) brightness(1.08);
   border: 1px solid var(--c-border);
   border-radius: var(--radius);
-
-  /* Layered glow: cyan top-left, violet bottom-right */
   box-shadow:
     0 2px 0 rgba(56, 217, 245, 0.12) inset,
     0 -1px 0 rgba(167, 139, 250, 0.08) inset,
     0 0 0 1px rgba(255,255,255,0.04) inset,
     0 4px 40px rgba(0,0,0,0.72),
     0 0 60px rgba(56, 217, 245, 0.06);
-
   pointer-events: all;
   transition:
     border-color 0.28s var(--ease-in-out),
     box-shadow   0.28s var(--ease-in-out),
     border-radius 0.22s var(--ease-in-out);
-
-  /* Subtle top edge highlight */
   overflow: hidden;
 }
 
-/* Shimmer sweep on the bar top edge */
 .bar::before {
   content: '';
   position: absolute;
@@ -118,7 +118,6 @@ html, body {
   100% { left: 160%; opacity: 0; }
 }
 
-/* Diagonal gradient overlay — barely visible depth */
 .bar::after {
   content: '';
   position: absolute;
@@ -131,6 +130,32 @@ html, body {
   );
   pointer-events: none;
   border-radius: inherit;
+}
+
+/* Voice-active bar glow — cyan pulse on the border */
+.bar:has(.mic-btn.active) {
+  border-color: var(--c-accent-dim);
+  box-shadow:
+    0 2px 0 rgba(56, 217, 245, 0.25) inset,
+    0 0 0 1px rgba(56,217,245,0.10) inset,
+    0 6px 48px rgba(0,0,0,0.78),
+    0 0 80px rgba(56, 217, 245, 0.22),
+    0 0 40px rgba(167, 139, 250, 0.10);
+  animation: barListenGlow 1.8s ease-in-out infinite;
+}
+
+@keyframes barListenGlow {
+  0%,100% { box-shadow:
+    0 2px 0 rgba(56,217,245,0.20) inset,
+    0 0 0 1px rgba(56,217,245,0.08) inset,
+    0 6px 48px rgba(0,0,0,0.78),
+    0 0 60px rgba(56,217,245,0.14); }
+  50%     { box-shadow:
+    0 2px 0 rgba(56,217,245,0.35) inset,
+    0 0 0 1px rgba(56,217,245,0.18) inset,
+    0 6px 48px rgba(0,0,0,0.78),
+    0 0 100px rgba(56,217,245,0.30),
+    0 0 50px rgba(167,139,250,0.18); }
 }
 
 .bar.log-open {
@@ -212,12 +237,31 @@ html, body {
   animation: shimmer 1.2s ease-in-out infinite;
   pointer-events: none;
 }
+
+/* Voice-active input — subtle violet tint */
+.cmd-input.voice-active {
+  background: rgba(56, 217, 245, 0.05);
+  border-color: rgba(56, 217, 245, 0.5);
+  color: var(--c-accent);
+  font-style: italic;
+  letter-spacing: 0.04em;
+  animation: voiceShimmer 1.4s ease-in-out infinite;
+  pointer-events: none;
+}
+.cmd-input.voice-active::placeholder {
+  color: var(--c-accent-dim);
+}
+
 @keyframes shimmer {
   0%,100% { box-shadow: 0 0 0 2px rgba(56,217,245,0.10), inset 0 1px 4px rgba(0,0,0,0.3); }
   50%     { box-shadow: 0 0 0 2px rgba(56,217,245,0.35), 0 0 18px rgba(56,217,245,0.15), inset 0 1px 4px rgba(0,0,0,0.3); }
 }
 
-/* Bottom glow line under input */
+@keyframes voiceShimmer {
+  0%,100% { box-shadow: 0 0 0 2px rgba(56,217,245,0.15), inset 0 1px 4px rgba(0,0,0,0.2); }
+  50%     { box-shadow: 0 0 0 2px rgba(56,217,245,0.50), 0 0 22px rgba(56,217,245,0.22), inset 0 1px 4px rgba(0,0,0,0.2); }
+}
+
 .input-glow {
   position: absolute; bottom: -1px; left: 8%; width: 84%; height: 1px;
   background: linear-gradient(90deg, transparent, var(--c-accent), rgba(167,139,250,0.6), transparent);
@@ -254,6 +298,179 @@ html, body {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+   MIC BUTTON
+   ═════════════════════════════════════════════════════════════════════════ */
+
+.mic-btn {
+  position: relative;
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(56, 217, 245, 0.22);
+  background: rgba(0, 0, 0, 0.42);
+  color: var(--c-mic-idle);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  outline: none;
+  pointer-events: all;
+  z-index: 2;
+  transition:
+    color        0.22s var(--ease-in-out),
+    border-color 0.22s var(--ease-in-out),
+    background   0.22s var(--ease-in-out),
+    box-shadow   0.22s var(--ease-in-out),
+    transform    0.18s var(--ease-spring);
+  -webkit-app-region: no-drag;
+}
+
+.mic-btn:hover {
+  color: var(--c-mic-ready);
+  border-color: rgba(56, 217, 245, 0.55);
+  background: rgba(56, 217, 245, 0.07);
+  box-shadow: 0 0 14px rgba(56,217,245,0.18);
+  transform: scale(1.08);
+}
+
+/* ready = voice deps installed */
+.mic-btn.ready {
+  color: var(--c-mic-idle);
+}
+
+/* not ready = voice deps missing */
+.mic-btn.not-ready {
+  color: var(--c-mic-no-ready);
+  border-color: rgba(110, 145, 180, 0.20);
+  cursor: not-allowed;
+}
+.mic-btn.not-ready:hover {
+  color: var(--c-mic-no-ready);
+  border-color: rgba(110, 145, 180, 0.30);
+  background: rgba(0,0,0,0.42);
+  box-shadow: none;
+  transform: none;
+}
+
+/* Active = recording */
+.mic-btn.active {
+  color: var(--c-mic-active);
+  border-color: var(--c-accent);
+  background: rgba(56, 217, 245, 0.12);
+  box-shadow:
+    0 0 0 2px rgba(56,217,245,0.25),
+    0 0 20px rgba(56,217,245,0.30),
+    inset 0 0 8px rgba(56,217,245,0.08);
+  animation: micActivePulse 1.6s ease-in-out infinite;
+}
+
+@keyframes micActivePulse {
+  0%,100% {
+    box-shadow:
+      0 0 0 2px rgba(56,217,245,0.20),
+      0 0 16px rgba(56,217,245,0.22),
+      inset 0 0 6px rgba(56,217,245,0.06);
+  }
+  50% {
+    box-shadow:
+      0 0 0 3px rgba(56,217,245,0.40),
+      0 0 30px rgba(56,217,245,0.40),
+      inset 0 0 12px rgba(56,217,245,0.14);
+  }
+}
+
+/* Mic SVG icon */
+.mic-icon {
+  width: 15px;
+  height: 15px;
+  position: relative;
+  z-index: 3;
+  transition: transform 0.18s var(--ease-spring), opacity 0.18s;
+}
+
+.mic-btn.active .mic-icon {
+  transform: scale(1.12);
+}
+
+/* ── Ripple ring ──────────────────────────────────────────────────────────── */
+.mic-ripple {
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(56, 217, 245, 0);
+  pointer-events: none;
+}
+
+.mic-ripple.pulsing {
+  animation: rippleExpand 1.6s ease-out infinite;
+}
+
+@keyframes rippleExpand {
+  0%   { inset: -2px; border-color: rgba(56,217,245,0.7);  opacity: 1; }
+  100% { inset: -14px; border-color: rgba(56,217,245,0);   opacity: 0; }
+}
+
+/* Second ring offset */
+.mic-btn.active::before {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  border: 1px solid rgba(56,217,245,0.4);
+  animation: rippleExpand 1.6s ease-out 0.55s infinite;
+  pointer-events: none;
+}
+
+/* ── Sound waves (visualiser bars) ─────────────────────────────────────── */
+.mic-waves {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border-radius: 50%;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.22s;
+}
+
+.mic-waves.animating {
+  opacity: 1;
+}
+
+/* Bars are absolutely invisible until animating — they appear OVER the mic icon */
+.wave {
+  width: 2px;
+  border-radius: 2px;
+  background: var(--c-mic-wave);
+  opacity: 0.55;
+  transform-origin: center;
+  height: 4px; /* base height */
+}
+
+.mic-waves.animating .wave { animation-timing-function: ease-in-out; animation-iteration-count: infinite; }
+.mic-waves.animating .w1 { animation: waveBar 0.9s ease-in-out infinite;          height: 5px; animation-delay: 0s; }
+.mic-waves.animating .w2 { animation: waveBar 0.9s ease-in-out infinite;          height: 5px; animation-delay: 0.13s; }
+.mic-waves.animating .w3 { animation: waveBar 0.9s ease-in-out infinite;          height: 5px; animation-delay: 0.26s; }
+.mic-waves.animating .w4 { animation: waveBar 0.9s ease-in-out infinite;          height: 5px; animation-delay: 0.39s; }
+.mic-waves.animating .w5 { animation: waveBar 0.9s ease-in-out infinite;          height: 5px; animation-delay: 0.52s; }
+
+@keyframes waveBar {
+  0%,100% { transform: scaleY(1);    opacity: 0.45; }
+  50%     { transform: scaleY(3.2);  opacity: 0.90; }
+}
+
+/* Hide mic icon when waves are showing */
+.mic-btn.active .mic-icon {
+  opacity: 0;
+  transform: scale(0.6);
+  transition: opacity 0.18s, transform 0.18s;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
    LOG PANEL
    ═════════════════════════════════════════════════════════════════════════ */
 
@@ -275,7 +492,6 @@ html, body {
   overflow: hidden;
   position: relative;
 
-  /* Collapsed */
   max-height: 0;
   opacity: 0;
   pointer-events: none;
@@ -284,7 +500,6 @@ html, body {
     opacity    0.32s var(--ease-out);
 }
 
-/* Subtle corner glow inside the panel */
 .log-panel::before {
   content: '';
   position: absolute;
@@ -326,7 +541,6 @@ html, body {
   letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--c-accent-dim);
-  /* Subtle text glow */
   text-shadow: 0 0 12px rgba(56,217,245,0.4);
 }
 
@@ -421,7 +635,6 @@ html, body {
   white-space: pre-wrap;
 }
 
-/* Type colours — richer, with a faint text-shadow for glow */
 .log-entry[data-type="info"]     .log-stage {
   color: var(--c-info);
   text-shadow: 0 0 8px rgba(56,217,245,0.45);
@@ -443,7 +656,6 @@ html, body {
   text-shadow: 0 0 8px rgba(255,209,102,0.35);
 }
 
-/* Result banners — slightly more vivid */
 .log-entry.result-ok {
   background: rgba(79,255,176,0.07);
   border-left: 2px solid rgba(79,255,176,0.5);
@@ -457,7 +669,6 @@ html, body {
   box-shadow: inset 0 0 20px rgba(255,83,112,0.04);
 }
 
-/* Separator */
 .log-separator {
   height: 1px;
   background: linear-gradient(90deg, transparent, rgba(56,217,245,0.18), rgba(167,139,250,0.12), transparent);
