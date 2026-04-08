@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import logging
@@ -98,27 +97,38 @@ class VoiceCheckResponse(BaseModel):
 
 # ── Shared execution helper ──────────────────────────────────────────────── #
 
-def _run_instruction(instruction: str) -> tuple[Any, str | None, list[dict]]:
+def _run_instruction(instruction: str) -> tuple[Any, str | None, list[dict], bool]:
     """
-    Run instruction through the agent and return (output, error, events).
-    Extracted so both /execute and /voice/listen can share it.
+    Run instruction through the agent and return (output, error, events, success).
+
+    Injects an event_callback into the executor for the duration of this call
+    by temporarily replacing the bound method on the executor instance.
+    The original method is always restored in the finally block.
+
+    The content-generation pre-pass (intent → verbatim content) is handled
+    transparently inside agent.run() via _maybe_generate_content — no special
+    handling is needed here.
     """
     collected_events: list[dict] = []
 
     def _collect(event: dict) -> None:
         collected_events.append(event)
 
-    original = agent._executor.execute
+    # Capture the *real* bound method before patching
+    original_execute = agent._executor.execute
 
-    def _patched(tool_name: str, **kwargs):
-        return original(tool_name, event_callback=_collect, **kwargs)
+    def _patched_execute(tool_name: str, **kwargs: Any):
+        # Guard: never pass event_callback twice if somehow already present
+        kwargs.pop("event_callback", None)
+        return original_execute(tool_name, event_callback=_collect, **kwargs)
 
-    agent._executor.execute = _patched
+    agent._executor.execute = _patched_execute
 
     try:
         result = agent.run(instruction)
     finally:
-        agent._executor.execute = original
+        # Always restore — even if agent.run() raises
+        agent._executor.execute = original_execute
 
     return result.output, result.error, collected_events, result.success
 
@@ -206,6 +216,10 @@ def voice_listen(req: VoiceListenRequest = VoiceListenRequest()):
 
     Returns both the transcript AND the agent execution result so the
     frontend can display what was heard and what was done.
+
+    The content-generation pre-pass inside the agent handles intent-based
+    instructions (e.g. "ask John about his health") automatically — the
+    transcribed text is passed directly to agent.run() unchanged.
     """
     try:
         from voice_input import transcribe_from_mic
@@ -235,7 +249,8 @@ def voice_listen(req: VoiceListenRequest = VoiceListenRequest()):
 
     logger.info("Voice transcript: %r — executing agent…", transcript)
 
-    # Step 2: Execute
+    # Step 2: Execute — _run_instruction handles event collection and
+    # the agent internally handles content-generation pre-pass
     try:
         output, error, events, success = _run_instruction(transcript)
     except Exception as exc:

@@ -1,7 +1,11 @@
 """
 voice to text input module
-using faster-whisper for offline speech recognition, it will record audio from microphone for a 
-fixed duration or until silence is detected, then transcribe the audio and return the transcript as string.
+using faster-whisper for offline speech recognition. Records audio from the
+microphone until the user presses Enter or the hard duration cap is reached,
+then transcribes and returns the transcript as a string.
+
+Silence-based auto-stop has been intentionally removed — the user is always
+in full control of when recording ends.
 """
 
 from __future__ import annotations
@@ -15,10 +19,8 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 SAMPLE_RATE     = 16_000   # Whisper expects 16 kHz mono
-MAX_DURATION    = 15       # seconds — hard cap on recording
-SILENCE_THRESH  = 0.012    # RMS below this = silence
-SILENCE_SECS    = 2      # seconds of silence before auto-stop
-MIN_SPEECH_SECS = 0.4      # ignore recording shorter than this
+MAX_DURATION    = 60       # seconds — hard cap, increased since user controls stop
+MIN_SPEECH_SECS = 0.4      # ignore recordings shorter than this
 CHUNK_SIZE      = 1024     # samples per chunk
 
 _model_lock = threading.Lock()
@@ -34,11 +36,23 @@ def _get_model(model_size: str = "base"):
             _whisper_model = WhisperModel(
                 model_size,
                 device="cpu",
-                compute_type="int8", 
+                compute_type="int8",
             )
             logger.info("Whisper model ready.")
     return _whisper_model
 
+
+def _wait_for_enter(stop_event: threading.Event) -> None:
+    """
+    Runs in a background thread. Blocks on input() — when the user
+    presses Enter, it sets stop_event so the recording loop exits cleanly.
+    """
+    try:
+        input()
+    except Exception:
+        pass
+    finally:
+        stop_event.set()
 
 
 def transcribe_from_mic(
@@ -53,20 +67,22 @@ def transcribe_from_mic(
         )
 
     try:
-        _get_model(model_size)  
+        _get_model(model_size)
     except ImportError:
         raise RuntimeError(
             "faster-whisper is not installed. Run: pip install faster-whisper"
         )
 
-    logger.info(" Recording started (max %ss)…", max_duration)
+    logger.info("Recording started (max %ss) — press Enter to stop.", max_duration)
+    print("  🎤  Recording… press Enter when done.", flush=True)
+
+    # ── Enter-to-stop via background thread ───────────────────────── #
+    stop_event = threading.Event()
+    enter_thread = threading.Thread(target=_wait_for_enter, args=(stop_event,), daemon=True)
+    enter_thread.start()
 
     chunks: list[np.ndarray] = []
-    silence_samples = 0
-    speech_samples  = 0
-    silence_limit   = int(SILENCE_SECS  * SAMPLE_RATE / CHUNK_SIZE)
-    speech_required = int(MIN_SPEECH_SECS * SAMPLE_RATE / CHUNK_SIZE)
-    max_chunks      = int(max_duration  * SAMPLE_RATE / CHUNK_SIZE)
+    max_chunks = int(max_duration * SAMPLE_RATE / CHUNK_SIZE)
 
     with sd.InputStream(
         samplerate=SAMPLE_RATE,
@@ -75,19 +91,16 @@ def transcribe_from_mic(
         blocksize=CHUNK_SIZE,
     ) as stream:
         for _ in range(max_chunks):
-            audio_chunk, _ = stream.read(CHUNK_SIZE)
-            chunk = audio_chunk.flatten()
-            rms = float(np.sqrt(np.mean(chunk ** 2)))
-            chunks.append(chunk)
+            if stop_event.is_set():
+                logger.info("Enter pressed — stopping recording.")
+                print("  ⏹  Stopped.", flush=True)
+                break
 
-            if rms > SILENCE_THRESH:
-                speech_samples  += 1
-                silence_samples  = 0
-            else:
-                silence_samples += 1
-                if speech_samples >= speech_required and silence_samples >= silence_limit:
-                    logger.info("Silence detected — stopping recording.")
-                    break
+            audio_chunk, _ = stream.read(CHUNK_SIZE)
+            chunks.append(audio_chunk.flatten())
+
+    # Ensure the enter thread doesn't hang if we hit the hard cap
+    stop_event.set()
 
     if not chunks:
         return None
@@ -95,6 +108,7 @@ def transcribe_from_mic(
     audio = np.concatenate(chunks)
     duration = len(audio) / SAMPLE_RATE
     logger.info("Recorded %.2fs of audio — transcribing…", duration)
+    print(f"  ✂  Recorded {duration:.1f}s — transcribing…", flush=True)
 
     if duration < MIN_SPEECH_SECS:
         logger.warning("Recording too short (%.2fs) — ignoring.", duration)
@@ -105,7 +119,7 @@ def transcribe_from_mic(
         audio,
         language="en",
         beam_size=5,
-        vad_filter=True,      # built-in filter for clearer segments
+        vad_filter=True,
         vad_parameters={"min_silence_duration_ms": 500},
     )
 
