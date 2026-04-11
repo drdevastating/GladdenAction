@@ -1,5 +1,6 @@
 """
-agent/agent.py
+agent/agent.py  (updated — new workflows: send_whatsapp_advanced, play_youtube_video,
+                 linkedin_action, code_workflow_cpp, launch_application, take_screenshot)
 
 The Agent is the reasoning layer of the system. It sits above the Executor
 and is the only layer that communicates with the LLM.
@@ -17,12 +18,6 @@ Responsibilities
 - Safely parse the model's JSON response.
 - Delegate execution to ToolExecutor and return the result.
 - Never execute tools directly — always goes through the Executor.
-
-What this layer is NOT responsible for
----------------------------------------
-- Knowing how tools work internally (that's BaseTool's job).
-- Performing validation (that's the Executor's job).
-- Storing conversation history (multi-turn reasoning — future phase).
 """
 
 from __future__ import annotations
@@ -65,13 +60,38 @@ the "ui_automation" tool:
   - Browser, Chrome, Gmail, email, sending mail
   - "open", "launch", "type into", "using notepad", "in VS Code", "send email"
   - WhatsApp, messaging, sending a message to a contact
+  - YouTube, play video, watch video, search video
+  - LinkedIn, profile, connection request, connect with someone
+  - C++, compile, run program, g++, executable
+  - Screenshot, capture screen, take a screenshot
+  - Opening apps/applications by name
 
 RULE 2 — MATCH THE WORKFLOW ARGUMENT:
-When you select "ui_automation", you must also pick the correct "workflow" value:
-  - "create_file_notepad"   → user wants to create/write a file using Notepad
-  - "create_file_vscode"    → user wants to create/write code in VS Code
-  - "send_email_browser"    → send email via Gmail in Chrome (pre-filled compose URL)
-  - "send_whatsapp_desktop" → send a WhatsApp message via WhatsApp Desktop
+When you select "ui_automation", pick the correct "workflow" value:
+
+  File creation:
+    "create_file_notepad"     → user wants to create/write a file using Notepad
+    "create_file_vscode"      → user wants to create/write code in VS Code
+
+  Email:
+    "send_email_browser"      → send email via Gmail in Chrome
+
+  WhatsApp:
+    "send_whatsapp_desktop"   → send a single WhatsApp message to one contact
+    "send_whatsapp_advanced"  → send to multiple contacts, repeat messages, or use delay
+
+  YouTube:
+    "play_youtube_video"      → search YouTube and play a video (query required)
+
+  LinkedIn:
+    "linkedin_action"         → search/open a LinkedIn profile; optionally connect
+
+  Code:
+    "code_workflow_cpp"       → create a C++ file, compile with g++, run it
+
+  System:
+    "launch_application"      → open a named application (chrome, vscode, calculator, etc.)
+    "take_screenshot"         → capture the screen and save as PNG
 
 RULE 3 — DIRECT API TOOLS (fallback only):
 Use "file_creation" only when the user explicitly asks for a direct/silent file
@@ -98,6 +118,33 @@ Response: {"tool": "ui_automation", "arguments": {"workflow": "send_email_browse
 
 User: "Send a WhatsApp message to Alice asking about her weekend"
 Response: {"tool": "ui_automation", "arguments": {"workflow": "send_whatsapp_desktop", "contact_name": "Alice", "message": "Hey Alice! Hope you had a great weekend. How did it go?"}}
+
+User: "Send WhatsApp messages to Alice and Bob saying Happy Birthday"
+Response: {"tool": "ui_automation", "arguments": {"workflow": "send_whatsapp_advanced", "contact_name": ["Alice", "Bob"], "message": "Happy Birthday! 🎉", "repeat": 1}}
+
+User: "Play a YouTube video about system design interviews"
+Response: {"tool": "ui_automation", "arguments": {"workflow": "play_youtube_video", "query": "system design interviews"}}
+
+User: "Open Elon Musk's LinkedIn profile"
+Response: {"tool": "ui_automation", "arguments": {"workflow": "linkedin_action", "name": "Elon Musk", "action": "open"}}
+
+User: "Send a connection request to Sundar Pichai on LinkedIn"
+Response: {"tool": "ui_automation", "arguments": {"workflow": "linkedin_action", "name": "Sundar Pichai", "action": "connect"}}
+
+User: "Create and run a C++ program that prints Fibonacci numbers"
+Response: {"tool": "ui_automation", "arguments": {"workflow": "code_workflow_cpp", "filename": "fibonacci.cpp", "code": "#include <iostream>\\nint main() {\\n    int a=0,b=1;\\n    for(int i=0;i<10;i++){std::cout<<a<<' ';int c=a+b;a=b;b=c;}\\n    return 0;\\n}"}}
+
+User: "Open Chrome"
+Response: {"tool": "ui_automation", "arguments": {"workflow": "launch_application", "app_name": "chrome"}}
+
+User: "Open the calculator"
+Response: {"tool": "ui_automation", "arguments": {"workflow": "launch_application", "app_name": "calculator"}}
+
+User: "Take a screenshot"
+Response: {"tool": "ui_automation", "arguments": {"workflow": "take_screenshot"}}
+
+User: "Take a screenshot and save it as desktop_capture.png"
+Response: {"tool": "ui_automation", "arguments": {"workflow": "take_screenshot", "screenshot_filename": "desktop_capture.png"}}
 
 User: "Create a file called notes.txt with the content buy milk"
 Response: {"tool": "file_creation", "arguments": {"filename": "notes.txt", "content": "buy milk"}}
@@ -132,59 +179,39 @@ Rules:
 - Do NOT include subject lines in your output — only the body/message/code.
 """
 
-# Keywords that signal the instruction describes *intent* rather than
-# providing *verbatim* content. When any of these appear, we run the
-# content-generation pre-pass.
 _INTENT_SIGNALS = [
-    # intent verbs
     "ask", "asking", "tell", "telling", "wish", "wishing", "greet", "greeting",
     "remind", "reminding", "invite", "inviting", "congratulate", "congratulating",
     "inform", "informing", "request", "requesting", "thank", "thanking",
     "apologise", "apologize", "apologising", "apologizing",
     "suggest", "suggesting", "recommend", "recommending",
     "explain", "explaining", "describe", "describing",
-    # vague content descriptors
     "about his", "about her", "about their", "about the", "about my",
     "in general", "general", "well-being", "wellbeing", "health",
     "how he is", "how she is", "how they are", "how are you",
     "catch up", "checking in", "check in", "follow up", "follow-up",
-    # code generation signals
     "write a", "write an", "create a", "implement", "build a",
     "a program that", "a script that", "a function that",
     "hello world",
 ]
 
-# Which tools and workflows may need content generation
 _CONTENT_WORKFLOWS = {
-    "send_whatsapp_desktop": "message",
-    "send_email_browser":    "content",
-    "create_file_notepad":   "content",
-    "create_file_vscode":    "content",
+    "send_whatsapp_desktop":   "message",
+    "send_whatsapp_advanced":  "message",
+    "send_email_browser":      "content",
+    "create_file_notepad":     "content",
+    "create_file_vscode":      "content",
+    "code_workflow_cpp":       "code",
 }
 _CONTENT_TOOLS = {"file_creation": "content"}
 
 
 def _needs_content_generation(instruction: str) -> bool:
-    """
-    Heuristic: does the instruction *describe intent* rather than
-    providing the verbatim content to write?
-
-    Returns True when any intent signal is found in the lowercased instruction.
-    """
     lowered = instruction.lower()
     return any(signal in lowered for signal in _INTENT_SIGNALS)
 
 
 def _build_content_gen_prompt(instruction: str, medium: str) -> str:
-    """
-    Build the user-facing prompt for the content-generation pre-pass.
-
-    Parameters
-    ----------
-    instruction : str   The original user instruction.
-    medium      : str   One of "whatsapp_message", "email_body", "file_content",
-                        "code_file", "note_content".
-    """
     medium_hints = {
         "whatsapp_message": (
             "Write a WhatsApp message based on this intent. "
@@ -211,16 +238,14 @@ def _build_content_gen_prompt(instruction: str, medium: str) -> str:
 
 
 def _detect_medium(instruction: str, workflow: str | None) -> str:
-    """Map a workflow name (or instruction keywords) to a content-gen medium."""
-    if workflow == "send_whatsapp_desktop":
+    if workflow in ("send_whatsapp_desktop", "send_whatsapp_advanced"):
         return "whatsapp_message"
     if workflow == "send_email_browser":
         return "email_body"
-    if workflow == "create_file_vscode":
+    if workflow in ("create_file_vscode", "code_workflow_cpp"):
         return "code_file"
     if workflow == "create_file_notepad":
         return "note_content"
-    # file_creation tool
     lowered = instruction.lower()
     if any(kw in lowered for kw in [".py", ".js", ".cpp", ".ts", ".java", "code", "script", "program"]):
         return "code_file"
@@ -232,7 +257,6 @@ def _detect_medium(instruction: str, workflow: str | None) -> str:
 # --------------------------------------------------------------------------- #
 
 def _build_tool_listing(metadata: list[dict]) -> str:
-    """Render tool metadata into a readable block for the prompt."""
     lines: list[str] = []
     for i, tool in enumerate(metadata, start=1):
         lines.append(f"{i}. Tool name: {tool['name']}")
@@ -251,18 +275,12 @@ def _build_tool_listing(metadata: list[dict]) -> str:
 
 
 def _extract_json(text: str) -> str:
-    """
-    Extract a JSON object from the model response even if it wrapped the
-    output in markdown fences despite instructions not to.
-    """
     fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if fenced:
         return fenced.group(1)
-
     brace_match = re.search(r"\{.*\}", text, re.DOTALL)
     if brace_match:
         return brace_match.group(0)
-
     return text.strip()
 
 
@@ -274,21 +292,9 @@ class Agent:
     """
     Single-step reasoning agent backed by Groq + Llama 3.3.
 
-    New capability — Content Generation Pre-Pass
-    --------------------------------------------
-    Before dispatching a tool call, the agent checks whether the user's
-    instruction *describes intent* (e.g. "greet him and ask about his health")
-    rather than providing verbatim content. If so, a second LLM call is made
-    that generates the actual message/email/file content. The generated content
-    is then injected into the instruction so the tool-dispatch call receives
-    ready-to-use text.
-
-    Parameters
-    ----------
-    registry   : ToolRegistry   -- provides tool metadata for prompt building.
-    executor   : ToolExecutor   -- dispatches the tool call decided by the model.
-    api_key    : str            -- Groq API key from console.groq.com.
-    model_name : str            -- Groq model identifier.
+    Supports all UIAutomationTool workflows including the new ones:
+      send_whatsapp_advanced, play_youtube_video, linkedin_action,
+      code_workflow_cpp, launch_application, take_screenshot.
     """
 
     def __init__(
@@ -309,33 +315,10 @@ class Agent:
             registry.list_names(),
         )
 
-    # ------------------------------------------------------------------ #
-    #  Public API                                                          #
-    # ------------------------------------------------------------------ #
-
     def run(self, instruction: str) -> ToolResult:
-        """
-        Process a natural-language instruction end-to-end.
-
-        Steps
-        -----
-        1. Build a prompt exposing available tools + the user instruction.
-        2. Send to Llama 3.3 via Groq's chat completions endpoint.
-        3. Safely parse the JSON tool-call decision from the response.
-        4. Validate the decision structure.
-        5. [NEW] If the instruction describes intent rather than content,
-           run a content-generation pre-pass to produce the actual text,
-           then inject it into the decision arguments.
-        6. Delegate execution to ToolExecutor and return ToolResult.
-
-        Returns
-        -------
-        ToolResult -- always returned, never raises.
-        """
         if not instruction.strip():
             return ToolResult(success=False, error="Instruction must not be empty.")
 
-        # --- 1. Build prompt -------------------------------------------- #
         tool_metadata = self._registry.list_metadata()
         tool_listing = _build_tool_listing(tool_metadata)
         user_prompt = _USER_PROMPT_TEMPLATE.format(
@@ -345,7 +328,6 @@ class Agent:
 
         logger.info("Sending instruction to Groq/Llama: %r", instruction[:120])
 
-        # --- 2. Call Groq (tool dispatch) -------------------------------- #
         try:
             response = self._client.chat.completions.create(
                 model=self._model_name,
@@ -364,7 +346,6 @@ class Agent:
 
         logger.debug("Groq raw response: %s", raw_text)
 
-        # --- 3. Parse JSON ---------------------------------------------- #
         json_str = _extract_json(raw_text)
         try:
             decision: dict[str, Any] = json.loads(json_str)
@@ -376,7 +357,6 @@ class Agent:
             logger.error(msg)
             return ToolResult(success=False, error=msg, metadata={"raw": raw_text})
 
-        # --- 4. Validate decision structure ----------------------------- #
         if not isinstance(decision, dict):
             return ToolResult(
                 success=False,
@@ -407,19 +387,13 @@ class Agent:
             list(arguments.keys()),
         )
 
-        # --- 5. Content-generation pre-pass ----------------------------- #
         arguments = self._maybe_generate_content(
             instruction=instruction,
             tool_name=tool_name,
             arguments=arguments,
         )
 
-        # --- 6. Execute via Executor ------------------------------------ #
         return self._executor.execute(tool_name, **arguments)
-
-    # ------------------------------------------------------------------ #
-    #  Content-generation pre-pass                                         #
-    # ------------------------------------------------------------------ #
 
     def _maybe_generate_content(
         self,
@@ -428,27 +402,10 @@ class Agent:
         tool_name: str,
         arguments: dict[str, Any],
     ) -> dict[str, Any]:
-        """
-        If the instruction describes *intent* rather than verbatim content,
-        call the LLM to generate the actual content and inject it into the
-        arguments dict before tool execution.
-
-        The method is side-effect free — it always returns a (possibly
-        updated) copy of *arguments*.
-
-        Supported cases
-        ---------------
-        ui_automation / send_whatsapp_desktop  → generates arguments["message"]
-        ui_automation / send_email_browser     → generates arguments["content"]
-        ui_automation / create_file_notepad    → generates arguments["content"]
-        ui_automation / create_file_vscode     → generates arguments["content"]
-        file_creation                          → generates arguments["content"]
-        """
         if not _needs_content_generation(instruction):
             logger.debug("Content-gen pre-pass skipped — instruction appears verbatim.")
             return arguments
 
-        # Determine which argument key holds the content
         workflow = arguments.get("workflow", "")
         content_key: str | None = None
 
@@ -458,11 +415,8 @@ class Agent:
             content_key = _CONTENT_TOOLS.get(tool_name)
 
         if content_key is None:
-            # Not a content-bearing tool — skip
             return arguments
 
-        # Check if the model already produced decent content (>20 chars,
-        # not just a placeholder). If so, don't overwrite it.
         existing = arguments.get(content_key, "")
         if isinstance(existing, str) and len(existing.strip()) > 20:
             logger.debug(
@@ -471,7 +425,6 @@ class Agent:
             )
             return arguments
 
-        # Determine medium for the prompt hint
         medium = _detect_medium(instruction, workflow if tool_name == "ui_automation" else None)
 
         logger.info(
@@ -479,7 +432,6 @@ class Agent:
             tool_name, workflow, content_key, medium,
         )
 
-        # Call LLM for content generation
         generated = self._generate_content(instruction, medium)
 
         if generated:
@@ -487,22 +439,14 @@ class Agent:
                 "Content-gen pre-pass produced %d chars for key %r.",
                 len(generated), content_key,
             )
-            # Return a shallow copy with the generated content injected
             updated = dict(arguments)
             updated[content_key] = generated
             return updated
 
-        # If generation failed, fall back to original arguments
         logger.warning("Content-gen pre-pass produced no output — keeping original arguments.")
         return arguments
 
     def _generate_content(self, instruction: str, medium: str) -> str | None:
-        """
-        Make a focused LLM call to produce written content from the
-        user's intent description.
-
-        Returns the generated string, or None on failure.
-        """
         user_prompt = _build_content_gen_prompt(instruction, medium)
 
         try:
@@ -512,7 +456,7 @@ class Agent:
                     {"role": "system", "content": _CONTENT_GEN_SYSTEM_PROMPT},
                     {"role": "user",   "content": user_prompt},
                 ],
-                temperature=0.7,   # slightly creative for natural prose
+                temperature=0.7,
                 max_tokens=512,
             )
             text = (response.choices[0].message.content or "").strip()
@@ -520,10 +464,6 @@ class Agent:
         except Exception as exc:  # noqa: BLE001
             logger.error("Content-gen LLM call failed: %s", exc)
             return None
-
-    # ------------------------------------------------------------------ #
-    #  Introspection                                                       #
-    # ------------------------------------------------------------------ #
 
     def __repr__(self) -> str:
         return (

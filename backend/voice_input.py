@@ -1,11 +1,25 @@
 """
-voice to text input module
-using faster-whisper for offline speech recognition. Records audio from the
-microphone until the user presses Enter or the hard duration cap is reached,
-then transcribes and returns the transcript as a string.
+voice_input.py
 
-Silence-based auto-stop has been intentionally removed — the user is always
-in full control of when recording ends.
+Offline speech recognition using faster-whisper.
+
+Changes from the original
+--------------------------
+* Recording is now controlled by a threading.Event flag (`_stop_recording`)
+  instead of blocking on terminal input().  This lets the FastAPI server
+  call `request_stop()` when the frontend hits the /voice/stop endpoint,
+  so the user can click the mic button (or press Enter in the Electron
+  window) to end recording without needing a terminal.
+
+* `transcribe_from_mic()` polls the stop-event every CHUNK_SIZE samples
+  instead of spawning an input()-thread that is meaningless in a
+  headless server context.
+
+Public API
+----------
+    transcribe_from_mic(model_size, max_duration) -> str | None
+    request_stop()   — signal the running recording to stop
+    check_dependencies() -> dict[str, bool]
 """
 
 from __future__ import annotations
@@ -19,46 +33,53 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 SAMPLE_RATE     = 16_000   # Whisper expects 16 kHz mono
-MAX_DURATION    = 60       # seconds — hard cap, increased since user controls stop
+MAX_DURATION    = 60       # hard cap in seconds
 MIN_SPEECH_SECS = 0.4      # ignore recordings shorter than this
-CHUNK_SIZE      = 1024     # samples per chunk
+CHUNK_SIZE      = 1024     # samples per chunk (~64 ms at 16 kHz)
 
-_model_lock = threading.Lock()
+_model_lock  = threading.Lock()
 _whisper_model = None
+
+# ── Global stop-event ────────────────────────────────────────────────────
+# Set by request_stop(); cleared at the start of each new recording.
+_stop_event = threading.Event()
+
+
+def request_stop() -> None:
+    """
+    Signal the currently-running transcribe_from_mic() call to stop
+    recording and proceed to transcription.  Safe to call even when no
+    recording is in progress (no-op).
+    """
+    _stop_event.set()
 
 
 def _get_model(model_size: str = "base"):
     global _whisper_model
     with _model_lock:
         if _whisper_model is None:
-            logger.info("Loading Whisper model '%s' (first-time download may take a moment)…", model_size)
-            from faster_whisper import WhisperModel
-            _whisper_model = WhisperModel(
+            logger.info(
+                "Loading Whisper model '%s' (first-time download may take a moment)…",
                 model_size,
-                device="cpu",
-                compute_type="int8",
             )
+            from faster_whisper import WhisperModel
+            _whisper_model = WhisperModel(model_size, device="cpu", compute_type="int8")
             logger.info("Whisper model ready.")
     return _whisper_model
-
-
-def _wait_for_enter(stop_event: threading.Event) -> None:
-    """
-    Runs in a background thread. Blocks on input() — when the user
-    presses Enter, it sets stop_event so the recording loop exits cleanly.
-    """
-    try:
-        input()
-    except Exception:
-        pass
-    finally:
-        stop_event.set()
 
 
 def transcribe_from_mic(
     model_size: str = "base",
     max_duration: float = MAX_DURATION,
 ) -> Optional[str]:
+    """
+    Record from the default microphone until either:
+      • request_stop() is called  (frontend clicked the mic button / pressed Enter)
+      • max_duration seconds elapse  (hard safety cap)
+
+    Returns the transcribed string, or None if nothing was recorded /
+    transcription produced no output.
+    """
     try:
         import sounddevice as sd
     except ImportError:
@@ -73,13 +94,10 @@ def transcribe_from_mic(
             "faster-whisper is not installed. Run: pip install faster-whisper"
         )
 
-    logger.info("Recording started (max %ss) — press Enter to stop.", max_duration)
-    print("  🎤  Recording… press Enter when done.", flush=True)
+    # Clear any leftover stop signal from a previous call
+    _stop_event.clear()
 
-    # ── Enter-to-stop via background thread ───────────────────────── #
-    stop_event = threading.Event()
-    enter_thread = threading.Thread(target=_wait_for_enter, args=(stop_event,), daemon=True)
-    enter_thread.start()
+    logger.info("Recording started (max %.0fs) — waiting for stop signal…", max_duration)
 
     chunks: list[np.ndarray] = []
     max_chunks = int(max_duration * SAMPLE_RATE / CHUNK_SIZE)
@@ -91,24 +109,19 @@ def transcribe_from_mic(
         blocksize=CHUNK_SIZE,
     ) as stream:
         for _ in range(max_chunks):
-            if stop_event.is_set():
-                logger.info("Enter pressed — stopping recording.")
-                print("  ⏹  Stopped.", flush=True)
+            if _stop_event.is_set():
+                logger.info("Stop signal received — ending recording.")
                 break
 
             audio_chunk, _ = stream.read(CHUNK_SIZE)
             chunks.append(audio_chunk.flatten())
 
-    # Ensure the enter thread doesn't hang if we hit the hard cap
-    stop_event.set()
-
     if not chunks:
         return None
 
-    audio = np.concatenate(chunks)
+    audio    = np.concatenate(chunks)
     duration = len(audio) / SAMPLE_RATE
     logger.info("Recorded %.2fs of audio — transcribing…", duration)
-    print(f"  ✂  Recorded {duration:.1f}s — transcribing…", flush=True)
 
     if duration < MIN_SPEECH_SECS:
         logger.warning("Recording too short (%.2fs) — ignoring.", duration)

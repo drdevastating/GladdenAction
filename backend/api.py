@@ -1,11 +1,32 @@
+"""
+api.py  —  GladdenAction FastAPI backend
+
+Voice flow (new two-step design)
+---------------------------------
+1. Frontend POSTs /voice/start  → server begins recording in a background
+   thread and returns immediately with {"recording": true}.
+2. User speaks.
+3. Frontend POSTs /voice/stop   → server signals the recording thread to
+   stop, waits for transcription to finish, returns the transcript.
+4. Frontend populates the input box with the transcript.
+5. User reviews / edits, then presses Enter.
+6. Frontend POSTs /execute      → agent runs as normal.
+
+This design means the browser NEVER has to keep a long-lived HTTP
+connection open during recording, and Enter/Escape in the Electron
+window are always free to be handled by the renderer.
+"""
+
 from __future__ import annotations
 
 import logging
 import os
 import sys
+import threading
 from typing import Any
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
 logging.basicConfig(
@@ -49,9 +70,18 @@ def _build_agent() -> Agent:
 agent = _build_agent()
 
 
+# ── Voice recording state ────────────────────────────────────────────────── #
+# These module-level vars coordinate the start/stop voice flow.
+
+_recording_thread: threading.Thread | None = None
+_recording_result: dict = {}           # filled when thread finishes
+_recording_done   = threading.Event()  # set when transcription is complete
+_recording_lock   = threading.Lock()   # guards the vars above
+
+
 # ── FastAPI app ──────────────────────────────────────────────────────────── #
 
-app = FastAPI(title="Gladden API", version="2.0.0")
+app = FastAPI(title="Gladden API", version="3.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -72,18 +102,15 @@ class ExecuteResponse(BaseModel):
     error:   str | None = None
     events:  list[dict] = []
 
-class VoiceListenRequest(BaseModel):
-    model_size:   str   = "base"   # tiny | base | small
-    max_duration: float = 10.0
+class VoiceStartRequest(BaseModel):
+    model_size:   str   = "base"
+    max_duration: float = 30.0
 
-class VoiceListenResponse(BaseModel):
-    success:    bool
-    transcript: str | None = None
-    output:     Any        = None
-    error:      str | None = None
-    events:     list[dict] = []
+class VoiceStartResponse(BaseModel):
+    recording: bool
+    error:     str | None = None
 
-class VoiceTranscribeResponse(BaseModel):
+class VoiceStopResponse(BaseModel):
     success:    bool
     transcript: str | None = None
     error:      str | None = None
@@ -94,31 +121,28 @@ class VoiceCheckResponse(BaseModel):
     numpy:          bool
     ready:          bool
 
+# Keep the old transcribe schema for backward compat
+class VoiceListenRequest(BaseModel):
+    model_size:   str   = "base"
+    max_duration: float = 10.0
+
+class VoiceTranscribeResponse(BaseModel):
+    success:    bool
+    transcript: str | None = None
+    error:      str | None = None
+
 
 # ── Shared execution helper ──────────────────────────────────────────────── #
 
 def _run_instruction(instruction: str) -> tuple[Any, str | None, list[dict], bool]:
-    """
-    Run instruction through the agent and return (output, error, events, success).
-
-    Injects an event_callback into the executor for the duration of this call
-    by temporarily replacing the bound method on the executor instance.
-    The original method is always restored in the finally block.
-
-    The content-generation pre-pass (intent → verbatim content) is handled
-    transparently inside agent.run() via _maybe_generate_content — no special
-    handling is needed here.
-    """
     collected_events: list[dict] = []
 
     def _collect(event: dict) -> None:
         collected_events.append(event)
 
-    # Capture the *real* bound method before patching
     original_execute = agent._executor.execute
 
     def _patched_execute(tool_name: str, **kwargs: Any):
-        # Guard: never pass event_callback twice if somehow already present
         kwargs.pop("event_callback", None)
         return original_execute(tool_name, event_callback=_collect, **kwargs)
 
@@ -127,13 +151,12 @@ def _run_instruction(instruction: str) -> tuple[Any, str | None, list[dict], boo
     try:
         result = agent.run(instruction)
     finally:
-        # Always restore — even if agent.run() raises
         agent._executor.execute = original_execute
 
     return result.output, result.error, collected_events, result.success
 
 
-# ── Original routes ──────────────────────────────────────────────────────── #
+# ── Core routes ──────────────────────────────────────────────────────────── #
 
 @app.get("/health")
 def health():
@@ -147,12 +170,7 @@ def execute(req: InstructionRequest):
 
     output, error, events, success = _run_instruction(req.instruction)
 
-    return ExecuteResponse(
-        success=success,
-        output=output,
-        error=error,
-        events=events,
-    )
+    return ExecuteResponse(success=success, output=output, error=error, events=events)
 
 
 # ── Voice routes ─────────────────────────────────────────────────────────── #
@@ -175,11 +193,102 @@ def voice_check():
     )
 
 
+@app.post("/voice/start", response_model=VoiceStartResponse)
+def voice_start(req: VoiceStartRequest = VoiceStartRequest()):
+    """
+    Begin recording from the microphone in a background thread.
+    Returns immediately — the actual recording runs asynchronously.
+    Call /voice/stop when the user is done speaking.
+    """
+    global _recording_thread, _recording_result, _recording_done
+
+    try:
+        from voice_input import transcribe_from_mic, request_stop
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Voice module unavailable: {exc}. Install: pip install faster-whisper sounddevice",
+        )
+
+    with _recording_lock:
+        if _recording_thread is not None and _recording_thread.is_alive():
+            return VoiceStartResponse(recording=False, error="Already recording — call /voice/stop first.")
+
+        _recording_result = {}
+        _recording_done.clear()
+
+        def _run():
+            try:
+                transcript = transcribe_from_mic(
+                    model_size=req.model_size,
+                    max_duration=req.max_duration,
+                )
+                _recording_result["transcript"] = transcript
+                _recording_result["success"]    = bool(transcript)
+                if not transcript:
+                    _recording_result["error"] = "No speech detected. Please speak clearly and try again."
+            except Exception as exc:
+                logger.exception("Recording thread failed")
+                _recording_result["success"]    = False
+                _recording_result["transcript"] = None
+                _recording_result["error"]      = str(exc)
+            finally:
+                _recording_done.set()
+
+        _recording_thread = threading.Thread(target=_run, daemon=True)
+        _recording_thread.start()
+
+    logger.info("Voice recording started (max %.0fs).", req.max_duration)
+    return VoiceStartResponse(recording=True)
+
+
+@app.post("/voice/stop", response_model=VoiceStopResponse)
+def voice_stop():
+    """
+    Signal the background recording thread to stop, wait for transcription
+    to complete, and return the transcript.
+
+    This is what the frontend calls when the user clicks the mic button
+    a second time, presses Enter, or otherwise signals "I'm done speaking".
+    """
+    global _recording_thread
+
+    try:
+        from voice_input import request_stop
+    except ImportError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+    with _recording_lock:
+        if _recording_thread is None or not _recording_thread.is_alive():
+            # Nothing was recording — return a clear error
+            if not _recording_done.is_set():
+                return VoiceStopResponse(success=False, error="No active recording to stop.")
+
+    # Signal the recording loop to end
+    request_stop()
+
+    # Wait up to 60 s for transcription (Whisper can be slow on first run)
+    finished = _recording_done.wait(timeout=60)
+
+    if not finished:
+        return VoiceStopResponse(success=False, error="Transcription timed out.")
+
+    result = _recording_result
+    return VoiceStopResponse(
+        success=result.get("success", False),
+        transcript=result.get("transcript"),
+        error=result.get("error"),
+    )
+
+
+# ── Legacy /voice/transcribe (kept for backward compat) ─────────────────── #
+
 @app.post("/voice/transcribe", response_model=VoiceTranscribeResponse)
 def voice_transcribe(req: VoiceListenRequest = VoiceListenRequest()):
     """
-    Record from microphone and return the transcript only (no agent execution).
-    Use this to preview what was heard before deciding to execute.
+    Legacy single-shot endpoint: record for up to max_duration seconds,
+    then return the transcript.  Blocks the HTTP connection for the full
+    recording duration — use /voice/start + /voice/stop instead.
     """
     try:
         from voice_input import transcribe_from_mic
@@ -207,64 +316,3 @@ def voice_transcribe(req: VoiceListenRequest = VoiceListenRequest()):
         )
 
     return VoiceTranscribeResponse(success=True, transcript=transcript)
-
-
-@app.post("/voice/listen", response_model=VoiceListenResponse)
-def voice_listen(req: VoiceListenRequest = VoiceListenRequest()):
-    """
-    Full pipeline: Record → Transcribe → Execute agent.
-
-    Returns both the transcript AND the agent execution result so the
-    frontend can display what was heard and what was done.
-
-    The content-generation pre-pass inside the agent handles intent-based
-    instructions (e.g. "ask John about his health") automatically — the
-    transcribed text is passed directly to agent.run() unchanged.
-    """
-    try:
-        from voice_input import transcribe_from_mic
-    except ImportError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Voice module unavailable: {exc}. Install: pip install faster-whisper sounddevice",
-        )
-
-    # Step 1: Transcribe
-    try:
-        transcript = transcribe_from_mic(
-            model_size=req.model_size,
-            max_duration=req.max_duration,
-        )
-    except RuntimeError as exc:
-        return VoiceListenResponse(success=False, error=str(exc))
-    except Exception as exc:
-        logger.exception("voice_listen transcription failed")
-        return VoiceListenResponse(success=False, error=f"Transcription error: {exc}")
-
-    if not transcript:
-        return VoiceListenResponse(
-            success=False,
-            error="No speech detected. Please speak clearly and try again.",
-        )
-
-    logger.info("Voice transcript: %r — executing agent…", transcript)
-
-    # Step 2: Execute — _run_instruction handles event collection and
-    # the agent internally handles content-generation pre-pass
-    try:
-        output, error, events, success = _run_instruction(transcript)
-    except Exception as exc:
-        logger.exception("voice_listen agent execution failed")
-        return VoiceListenResponse(
-            success=False,
-            transcript=transcript,
-            error=f"Agent execution error: {exc}",
-        )
-
-    return VoiceListenResponse(
-        success=success,
-        transcript=transcript,
-        output=output,
-        error=error,
-        events=events,
-    )

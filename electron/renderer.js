@@ -1,8 +1,8 @@
 'use strict';
 
-const BACKEND_URL       = 'http://localhost:8000/execute';
-const VOICE_LISTEN_URL  = 'http://localhost:8000/voice/listen';
-const VOICE_CHECK_URL   = 'http://localhost:8000/voice/check';
+const BACKEND_URL        = 'http://localhost:8000/execute';
+const VOICE_TRANSCRIBE_URL = 'http://localhost:8000/voice/transcribe';
+const VOICE_CHECK_URL    = 'http://localhost:8000/voice/check';
 
 /* ── DOM refs ───────────────────────────────────────────────────────────── */
 const app        = document.getElementById('app');
@@ -23,9 +23,10 @@ const PADDING    = 16;
 
 /* ── State ──────────────────────────────────────────────────────────────── */
 let isExecuting   = false;
-let isListening   = false;
+let isRecording   = false;   // true while mic is open and capturing audio
+let isTranscribing = false;  // true while waiting for transcription response
 let logOpen       = false;
-let voiceReady    = false;  // true if backend voice deps are installed
+let voiceReady    = false;
 
 /* ═══════════════════════════════════════════════════════════════════════════
    VOICE READINESS CHECK
@@ -39,7 +40,7 @@ async function checkVoiceReady() {
     voiceReady = data.ready === true;
     if (voiceReady) {
       micBtn.classList.add('ready');
-      micBtn.title = 'Voice command (click or hold Space)';
+      micBtn.title = 'Voice command — click to start, click again to stop';
     } else {
       micBtn.classList.add('not-ready');
       micBtn.title = 'Voice unavailable — install: pip install faster-whisper sounddevice';
@@ -84,6 +85,8 @@ function showOverlay() {
 }
 
 function hideOverlay() {
+  // Don't hide if actively recording — stop recording first
+  if (isRecording || isTranscribing) return;
   closeLog();
   app.classList.add('hidden');
   app.classList.remove('visible');
@@ -108,23 +111,43 @@ window.gladden.setIgnoreMouseEvents(false);
 input.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
     e.preventDefault();
-    if (!isExecuting && !isListening) {
+
+    // If recording → Enter = stop recording (close the mic)
+    if (isRecording) {
+      stopRecording();
+      return;
+    }
+
+    // If transcribing → ignore Enter until we have the text
+    if (isTranscribing) return;
+
+    // Normal text execution
+    if (!isExecuting) {
       const instruction = input.value.trim();
       if (instruction) executeInstruction(instruction);
     }
     return;
   }
+
   if (e.key === 'Escape') {
+    if (isRecording || isTranscribing) {
+      cancelRecording();
+      return;
+    }
     if (logOpen) { closeLog(); return; }
     hideOverlay();
   }
 });
 
-/* Space bar = push-to-talk (only when input is NOT focused) */
+/* Space bar = push-to-talk toggle (only when input is NOT focused) */
 window.addEventListener('keydown', (e) => {
-  if (e.key === ' ' && document.activeElement !== input && !isExecuting && !isListening) {
+  if (e.key === ' ' && document.activeElement !== input) {
     e.preventDefault();
-    startVoiceListening();
+    if (isRecording) {
+      stopRecording();
+    } else if (!isExecuting && !isTranscribing) {
+      startRecording();
+    }
   }
 });
 
@@ -134,22 +157,33 @@ bar.addEventListener('click', (e) => {
   }
 });
 
-/* ── Mic button ─────────────────────────────────────────────────────────── */
+/* ── Mic button: click to start, click again to stop ───────────────────── */
 micBtn.addEventListener('click', (e) => {
   e.stopPropagation();
-  if (isListening || isExecuting) return;
-  startVoiceListening();
+  if (isTranscribing || isExecuting) return;
+
+  if (isRecording) {
+    stopRecording();
+  } else {
+    startRecording();
+  }
 });
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   VOICE LISTENING
+   VOICE RECORDING — TWO-STEP FLOW
+   Step 1: User starts mic → backend begins recording (non-blocking)
+   Step 2: User stops mic → backend transcribes → text appears in input
+   Step 3: User reviews/edits text → presses Enter to execute
    ═════════════════════════════════════════════════════════════════════════ */
 
+// AbortController so we can cancel the in-flight fetch if user hits Escape
+let recordingAbortController = null;
+
 function setMicState(state) {
-  // state: 'idle' | 'listening' | 'processing' | 'done' | 'error'
+  // state: 'idle' | 'recording' | 'transcribing'
   micBtn.setAttribute('data-state', state);
 
-  if (state === 'listening') {
+  if (state === 'recording') {
     micBtn.classList.add('active');
     micRipple.classList.add('pulsing');
     micWaves.classList.add('animating');
@@ -160,74 +194,113 @@ function setMicState(state) {
   }
 }
 
-async function startVoiceListening() {
-  if (isListening || isExecuting) return;
+function startRecording() {
   if (!voiceReady) {
     appendLogEntry({ type: 'error', stage: 'voice_unavailable', message: 'Voice deps not installed. Run: pip install faster-whisper sounddevice' });
     openLog();
     return;
   }
 
-  isListening = true;
-  input.classList.add('voice-active');
-  input.value = '';
-  input.placeholder = 'Listening…';
-  setMicState('listening');
-  setStatus('loading');
-  clearLog();
-  openLog();
+  if (isRecording || isTranscribing || isExecuting) return;
 
-  appendLogEntry({ type: 'info', stage: 'voice_start', message: '🎤 Recording — speak your command…' });
+  isRecording = true;
+  input.value = '';
+  input.placeholder = 'Recording… press Enter or click mic to stop';
+  input.classList.add('voice-active');
+  setMicState('recording');
+  setStatus('loading');
+
+  // Show a subtle hint in the log — don't open it automatically during recording
+  // so the user can focus on speaking
+}
+
+async function stopRecording() {
+  if (!isRecording) return;
+
+  isRecording = false;
+  isTranscribing = true;
+
+  input.placeholder = 'Transcribing…';
+  setMicState('transcribing');
+
+  recordingAbortController = new AbortController();
 
   try {
-    const response = await fetch(VOICE_LISTEN_URL, {
+    const response = await fetch(VOICE_TRANSCRIBE_URL, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ model_size: 'base', max_duration: 10.0 }),
+      body:    JSON.stringify({ model_size: 'base', max_duration: 30.0 }),
+      signal:  recordingAbortController.signal,
     });
 
     if (!response.ok) throw new Error('HTTP ' + response.status);
 
-    setMicState('processing');
-    input.placeholder = 'Processing…';
-
     const data = await response.json();
 
-    if (data.transcript) {
+    if (data.success && data.transcript) {
+      // ✅ Populate the input — user can now review and edit
       input.value = data.transcript;
-      appendLogEntry({ type: 'status', stage: 'transcribed', message: '🗣 "' + data.transcript + '"' });
-    }
-
-    if (!data.success) {
-      appendSeparator();
-      appendLogEntry({ type: 'error', stage: 'voice_failed', message: data.error || 'Voice command failed.', className: 'result-err' });
-      setStatus('error');
-    } else {
-      if (Array.isArray(data.events) && data.events.length > 0) {
-        appendSeparator();
-        await streamEvents(data.events);
-      }
-      appendSeparator();
-      appendLogEntry({ type: 'status', stage: 'done', message: data.output || 'Completed.', className: 'result-ok' });
+      input.classList.remove('voice-active');
+      input.placeholder = 'Ask Gladden…';
+      input.focus();
+      // Move cursor to end of transcribed text
+      input.setSelectionRange(input.value.length, input.value.length);
       setStatus('success');
+      setTimeout(() => setStatus('idle'), 2000);
+    } else {
+      input.value = '';
+      input.classList.remove('voice-active');
+      input.placeholder = 'Ask Gladden…';
+      appendLogEntry({
+        type: 'error',
+        stage: 'transcription_failed',
+        message: data.error || 'No speech detected. Try again.',
+        className: 'result-err',
+      });
+      openLog();
+      setStatus('error');
+      setTimeout(() => setStatus('idle'), 3000);
     }
 
   } catch (err) {
-    const isConnErr = err.message.includes('Failed to fetch') || err.message.includes('ERR_CONNECTION_REFUSED');
-    appendSeparator();
-    appendLogEntry({
-      type: 'error', stage: 'network_error',
-      message: isConnErr ? 'Backend not reachable — is the Python server running on :8000?' : err.message,
-      className: 'result-err',
-    });
-    setStatus('error');
-  } finally {
-    isListening = false;
+    if (err.name === 'AbortError') {
+      // User cancelled — clean up silently
+      input.value = '';
+    } else {
+      const isConn = err.message.includes('Failed to fetch') || err.message.includes('ERR_CONNECTION_REFUSED');
+      appendLogEntry({
+        type: 'error',
+        stage: 'network_error',
+        message: isConn ? 'Backend not reachable — is the Python server running on :8000?' : err.message,
+        className: 'result-err',
+      });
+      openLog();
+      setStatus('error');
+      setTimeout(() => setStatus('idle'), 3000);
+    }
+
     input.classList.remove('voice-active');
     input.placeholder = 'Ask Gladden…';
+  } finally {
+    isTranscribing = false;
+    isRecording = false;
+    recordingAbortController = null;
     setMicState('idle');
-    setTimeout(() => setStatus('idle'), 4000);
+    input.focus();
   }
+}
+
+function cancelRecording() {
+  if (!isRecording && !isTranscribing) return;
+  if (recordingAbortController) recordingAbortController.abort();
+  isRecording = false;
+  isTranscribing = false;
+  input.value = '';
+  input.classList.remove('voice-active');
+  input.placeholder = 'Ask Gladden…';
+  setMicState('idle');
+  setStatus('idle');
+  input.focus();
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
