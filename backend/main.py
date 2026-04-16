@@ -3,6 +3,14 @@ main.py
 
 Interactive REPL entry point for the AI Agent backend.
 
+Changes from previous version
+------------------------------
+- Imports and constructs a Planner instance.
+- Passes it to Agent constructor.
+- Registers the console event callback on the Agent so planning events
+  (planning_started, step_started, etc.) appear in the REPL output.
+- Everything else is unchanged.
+
 Registered tools
 ----------------
     ui_automation    — visible desktop UI workflows (Notepad, VS Code, Gmail, WhatsApp)
@@ -28,6 +36,7 @@ logging.basicConfig(
 logger = logging.getLogger("main")
 
 from agent.agent import Agent
+from agent.planner import Planner
 from core.tools import FileCreationTool
 from core.tools.registry import ToolRegistry
 from core.tools.system_control_tool import SystemControlTool
@@ -66,7 +75,7 @@ def console_event_callback(event: dict) -> None:
 # ============================================================================ #
 
 def build_agent() -> Agent:
-    """Wire up the full tool stack and return a ready Agent."""
+    """Wire up the full tool stack, planner, and return a ready Agent."""
     api_key = os.environ.get("GROQ_API_KEY", "").strip()
     if not api_key:
         print("\n[ERROR] GROQ_API_KEY environment variable is not set.")
@@ -80,9 +89,18 @@ def build_agent() -> Agent:
     registry.register(SystemControlTool())  # secure OS control engine
 
     executor = ToolExecutor(registry)
-    agent    = Agent(registry=registry, executor=executor, api_key=api_key)
 
-    logger.info("Agent ready — tools: %s", registry.list_names())
+    # ── Planner (new) ──────────────────────────────────────────────────
+    planner = Planner(api_key=api_key)
+
+    agent = Agent(
+        registry=registry,
+        executor=executor,
+        api_key=api_key,
+        planner=planner,      # inject the planner
+    )
+
+    logger.info("Agent ready — tools: %s  planner: enabled", registry.list_names())
     return agent
 
 
@@ -92,12 +110,13 @@ def build_agent() -> Agent:
 
 BANNER = """
 ╔══════════════════════════════════════════════════════════════════════╗
-║         AI Agent — Jarvis Mode  (Groq + Secure OS Control)          ║
+║   AI Agent — Jarvis Mode  (Groq + Multi-Step Planner + OS Control)  ║
 ╠══════════════════════════════════════════════════════════════════════╣
 ║  UI Automation                                                       ║
 ║    "Open Notepad and write a shopping list"                          ║
 ║    "Create a C++ Hello World in VS Code"                             ║
 ║    "Send an email to you@example.com saying hello"                   ║
+║    "Open Chrome then take a screenshot"  ← multi-step               ║
 ║                                                                      ║
 ║  Process Control                                                     ║
 ║    "Show top 5 processes by RAM"                                     ║
@@ -117,7 +136,12 @@ BANNER = """
 ║    "Rename notes.txt to todo.txt"                                    ║
 ║    "Delete temp.log"                                                 ║
 ║                                                                      ║
-║  Commands:  tools | quit | exit                                      ║
+║  Multi-Step Examples                                                 ║
+║    "Show CPU usage and memory stats"                                 ║
+║    "Open Chrome, then take a screenshot"                             ║
+║    "List top RAM processes, then kill notepad.exe"                   ║
+║                                                                      ║
+║  Commands:  tools | planner on/off | quit | exit                     ║
 ╚══════════════════════════════════════════════════════════════════════╝
 """
 
@@ -160,7 +184,20 @@ def repl(agent: Agent) -> None:
             print()
             continue
 
-        # Inject event callback for this run
+        # Toggle planner on/off from the REPL for easy testing
+        if raw.lower() == "planner on":
+            if agent._planner is None:
+                api_key = os.environ.get("GROQ_API_KEY", "").strip()
+                agent._planner = Planner(api_key=api_key)
+            print("  Planner: ON")
+            continue
+
+        if raw.lower() == "planner off":
+            agent._planner = None
+            print("  Planner: OFF  (single-step mode)")
+            continue
+
+        # ── Patch executor + register agent callback for this run ─────── #
         original_execute = agent._executor.execute
 
         def execute_with_callback(tool_name, **kwargs):
@@ -171,6 +208,7 @@ def repl(agent: Agent) -> None:
             )
 
         agent._executor.execute = execute_with_callback
+        agent.register_event_callback(console_event_callback)
 
         print()
         print("  ── Execution events ─────────────────────────────────────────")
@@ -178,7 +216,9 @@ def repl(agent: Agent) -> None:
         print("  ─────────────────────────────────────────────────────────────")
         _print_result(result)
 
+        # Restore originals
         agent._executor.execute = original_execute
+        agent.clear_event_callback()
         print()
 
 

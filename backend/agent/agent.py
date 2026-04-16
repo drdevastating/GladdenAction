@@ -1,6 +1,23 @@
 """
-agent/agent.py  (updated — new workflows: send_whatsapp_advanced, play_youtube_video,
-                 linkedin_action, code_workflow_cpp, launch_application, take_screenshot)
+agent/agent.py  (updated — multi-step Planner integration)
+
+Changes from the previous version
+----------------------------------
+ADDED:
+  - Optional Planner dependency (injected at construction time).
+  - _run_plan()  : iterates over plan steps, emitting step events.
+  - _emit_event(): emits planning/step lifecycle events via the executor's
+                   event callback mechanism.
+  - run() now calls the Planner first; falls back to the original single-step
+    path if planning is disabled, fails, or produces a single generic step.
+
+NOT CHANGED:
+  - ToolExecutor  — untouched.
+  - ToolRegistry  — untouched.
+  - BaseTool      — untouched.
+  - UIAutomationTool / SystemControlTool — untouched.
+  - Content-generation pre-pass — preserved and still applied per-step.
+  - All existing prompt templates — untouched.
 
 The Agent is the reasoning layer of the system. It sits above the Executor
 and is the only layer that communicates with the LLM.
@@ -25,11 +42,13 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 from groq import Groq
 
 from core.tools.base import ToolResult
+from agent.planner import Planner
 from core.tools.registry import ToolRegistry
 from execution.executor import ToolExecutor
 
@@ -284,17 +303,34 @@ def _extract_json(text: str) -> str:
     return text.strip()
 
 
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 # --------------------------------------------------------------------------- #
 #  Agent                                                                        #
 # --------------------------------------------------------------------------- #
 
 class Agent:
     """
-    Single-step reasoning agent backed by Groq + Llama 3.3.
+    Single-step (and now multi-step) reasoning agent backed by Groq + Llama 3.3.
 
-    Supports all UIAutomationTool workflows including the new ones:
-      send_whatsapp_advanced, play_youtube_video, linkedin_action,
-      code_workflow_cpp, launch_application, take_screenshot.
+    Construction
+    ------------
+    Pass a Planner instance to enable multi-step planning.
+    If planner=None the agent behaves exactly as before.
+
+    Execution flow (with Planner)
+    -----------------------------
+    1. Planner.create_plan(instruction)  →  plan with N steps
+    2. For each step: content-gen pre-pass → executor.execute()
+    3. If planner fails → fall back to original single-step path
+
+    Execution flow (without Planner / fallback)
+    -------------------------------------------
+    1. LLM decides single tool call
+    2. content-gen pre-pass
+    3. executor.execute()
     """
 
     def __init__(
@@ -303,25 +339,125 @@ class Agent:
         executor: ToolExecutor,
         api_key: str,
         model_name: str = _DEFAULT_MODEL,
+        planner: "Planner | None" = None,     # type: Planner | None  (avoid circular import)
     ) -> None:
-        self._registry = registry
-        self._executor = executor
+        self._registry   = registry
+        self._executor   = executor
         self._model_name = model_name
-        self._client = Groq(api_key=api_key)
+        self._client     = Groq(api_key=api_key)
+        self._planner    = planner
 
         logger.info(
-            "Agent initialised — model=%r  tools=%s",
+            "Agent initialised — model=%r  tools=%s  planner=%s",
             model_name,
             registry.list_names(),
+            "enabled" if planner else "disabled",
         )
 
+    # ── Public API ────────────────────────────────────────────────────── #
+
     def run(self, instruction: str) -> ToolResult:
+        """
+        Execute *instruction*.
+
+        Tries the Planner path first (if a Planner is attached).
+        Falls back to the original single-step path on any failure.
+        """
         if not instruction.strip():
             return ToolResult(success=False, error="Instruction must not be empty.")
 
+        # ── Multi-step path ────────────────────────────────────────────── #
+        if self._planner is not None:
+            self._emit_event("info", "planning_started",
+                             f"Planner is decomposing: {instruction[:80]}")
+            try:
+                plan = self._planner.create_plan(instruction)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Planner raised unexpectedly: %s — falling back.", exc)
+                plan = None
+
+            if plan is not None and isinstance(plan.get("steps"), list):
+                step_count = len(plan["steps"])
+                self._emit_event(
+                    "status", "planning_completed",
+                    f"Plan ready: {step_count} step(s).",
+                )
+                result = self._run_plan(instruction, plan)
+
+                # Emit top-level finished event
+                self._emit_event(
+                    "status" if result.success else "error",
+                    "execution_finished",
+                    f"All steps done — success={result.success}",
+                )
+                return result
+
+            logger.warning("Planner returned no valid plan — falling back to single-step.")
+            self._emit_event("info", "planning_fallback",
+                             "Planner produced no plan; using single-step execution.")
+
+        # ── Single-step fallback (original path — unchanged) ──────────── #
+        return self._run_single_step(instruction)
+
+    # ── Multi-step execution ──────────────────────────────────────────── #
+
+    def _run_plan(self, instruction: str, plan: dict) -> ToolResult:
+        """
+        Iterate over plan["steps"] and execute each one.
+
+        Stops on the first failure and returns that step's ToolResult.
+        On full success returns the last step's ToolResult.
+        """
+        steps: list[dict] = plan["steps"]
+        last_result: ToolResult | None = None
+
+        for idx, step in enumerate(steps):
+            step_num   = idx + 1
+            tool_name  = step.get("tool", "")
+            arguments  = dict(step.get("arguments", {}))
+
+            self._emit_event(
+                "info", "step_started",
+                f"Step {step_num}/{len(steps)}: {tool_name} "
+                f"({arguments.get('workflow') or arguments.get('action', '')})",
+            )
+
+            # Apply the content-gen pre-pass so generated content still works
+            arguments = self._maybe_generate_content(
+                instruction=instruction,
+                tool_name=tool_name,
+                arguments=arguments,
+            )
+
+            last_result = self._executor.execute(tool_name, **arguments)
+
+            if last_result.success:
+                self._emit_event(
+                    "status", "step_completed",
+                    f"Step {step_num}/{len(steps)} succeeded: {last_result.output}",
+                )
+            else:
+                self._emit_event(
+                    "error", "step_failed",
+                    f"Step {step_num}/{len(steps)} failed: {last_result.error}",
+                )
+                return last_result  # stop on first failure
+
+        # All steps succeeded
+        return last_result or ToolResult(
+            success=False,
+            error="Plan had no steps to execute.",
+        )
+
+    # ── Original single-step path (preserved verbatim) ───────────────── #
+
+    def _run_single_step(self, instruction: str) -> ToolResult:
+        """
+        Original Agent execution logic — unchanged from the pre-planner version.
+        """
         tool_metadata = self._registry.list_metadata()
-        tool_listing = _build_tool_listing(tool_metadata)
-        user_prompt = _USER_PROMPT_TEMPLATE.format(
+        tool_listing  = _build_tool_listing(tool_metadata)
+        user_prompt   = _USER_PROMPT_TEMPLATE.format(
             tool_listing=tool_listing,
             instruction=instruction,
         )
@@ -395,6 +531,8 @@ class Agent:
 
         return self._executor.execute(tool_name, **arguments)
 
+    # ── Content-generation pre-pass (unchanged) ───────────────────────── #
+
     def _maybe_generate_content(
         self,
         *,
@@ -465,8 +603,56 @@ class Agent:
             logger.error("Content-gen LLM call failed: %s", exc)
             return None
 
+    # ── Internal event emitter ────────────────────────────────────────── #
+
+    def _emit_event(self, type_: str, stage: str, message: str) -> None:
+        """
+        Emit a lifecycle event through the executor's patched execute path.
+
+        The executor may have been monkey-patched with an event_callback by
+        the REPL / API layer (see main.py / api.py).  We reach the callback
+        by calling a no-op execution — instead we fire the event directly
+        through any registered callback stored on the executor instance.
+
+        Because we cannot call executor.execute() without a real tool, we
+        store the last-known callback on self after each patched execute call.
+        A simpler, zero-coupling approach is used here: we emit to the logger
+        and also store a callback reference that the REPL/API can register.
+        """
+        event = {
+            "type":      type_,
+            "stage":     stage,
+            "message":   message,
+            "tool":      "agent/planner",
+            "timestamp": _utc_now(),
+        }
+        logger.info("[%s] %s — %s", type_.upper(), stage, message)
+
+        # Fire through registered callback if one has been set
+        cb = getattr(self, "_event_callback", None)
+        if cb is not None:
+            try:
+                cb(event)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("_event_callback raised: %s", exc)
+
+    def register_event_callback(self, callback) -> None:
+        """
+        Register a callback to receive Agent-level planning events.
+
+        The REPL (main.py) and API layer (api.py) can call this so that
+        planning_started / planning_completed / step_started / step_completed
+        events appear in the same stream as tool-execution events.
+        """
+        self._event_callback = callback
+
+    def clear_event_callback(self) -> None:
+        """Remove the registered event callback."""
+        self._event_callback = None
+
     def __repr__(self) -> str:
         return (
             f"<Agent model={self._model_name!r}  "
-            f"tools={self._registry.list_names()}>"
+            f"tools={self._registry.list_names()}  "
+            f"planner={'on' if self._planner else 'off'}>"
         )

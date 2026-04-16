@@ -1,7 +1,16 @@
 """
-api.py  —  GladdenAction FastAPI backend
+api.py  —  GladdenAction FastAPI backend  (updated: Planner integration)
 
-Voice flow (new two-step design)
+Changes from previous version
+------------------------------
+- Imports and constructs a Planner instance alongside the Agent.
+- Passes it to Agent constructor.
+- _run_instruction() now also registers a callback on the Agent so that
+  planning/step lifecycle events are collected into the same events list
+  that the frontend already streams.
+- All existing routes, schemas, and voice endpoints are unchanged.
+
+Voice flow (two-step design)
 ---------------------------------
 1. Frontend POSTs /voice/start  → server begins recording in a background
    thread and returns immediately with {"recording": true}.
@@ -11,10 +20,6 @@ Voice flow (new two-step design)
 4. Frontend populates the input box with the transcript.
 5. User reviews / edits, then presses Enter.
 6. Frontend POSTs /execute      → agent runs as normal.
-
-This design means the browser NEVER has to keep a long-lived HTTP
-connection open during recording, and Enter/Escape in the Electron
-window are always free to be handled by the renderer.
 """
 
 from __future__ import annotations
@@ -41,6 +46,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from agent.agent import Agent
+from agent.planner import Planner
 from core.tools import FileCreationTool
 from core.tools.registry import ToolRegistry
 from core.tools.system_control_tool import SystemControlTool
@@ -62,8 +68,9 @@ def _build_agent() -> Agent:
     registry.register(SystemControlTool())
 
     executor = ToolExecutor(registry)
-    agent    = Agent(registry=registry, executor=executor, api_key=api_key)
-    logger.info("Agent ready — tools: %s", registry.list_names())
+    planner  = Planner(api_key=api_key)
+    agent    = Agent(registry=registry, executor=executor, api_key=api_key, planner=planner)
+    logger.info("Agent ready — tools: %s  planner: enabled", registry.list_names())
     return agent
 
 
@@ -71,17 +78,16 @@ agent = _build_agent()
 
 
 # ── Voice recording state ────────────────────────────────────────────────── #
-# These module-level vars coordinate the start/stop voice flow.
 
 _recording_thread: threading.Thread | None = None
-_recording_result: dict = {}           # filled when thread finishes
-_recording_done   = threading.Event()  # set when transcription is complete
-_recording_lock   = threading.Lock()   # guards the vars above
+_recording_result: dict = {}
+_recording_done   = threading.Event()
+_recording_lock   = threading.Lock()
 
 
 # ── FastAPI app ──────────────────────────────────────────────────────────── #
 
-app = FastAPI(title="Gladden API", version="3.0.0")
+app = FastAPI(title="Gladden API", version="4.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -121,7 +127,6 @@ class VoiceCheckResponse(BaseModel):
     numpy:          bool
     ready:          bool
 
-# Keep the old transcribe schema for backward compat
 class VoiceListenRequest(BaseModel):
     model_size:   str   = "base"
     max_duration: float = 10.0
@@ -140,6 +145,7 @@ def _run_instruction(instruction: str) -> tuple[Any, str | None, list[dict], boo
     def _collect(event: dict) -> None:
         collected_events.append(event)
 
+    # Patch executor so tool-execution events are collected
     original_execute = agent._executor.execute
 
     def _patched_execute(tool_name: str, **kwargs: Any):
@@ -148,10 +154,14 @@ def _run_instruction(instruction: str) -> tuple[Any, str | None, list[dict], boo
 
     agent._executor.execute = _patched_execute
 
+    # Register callback on Agent so planning/step events are also collected
+    agent.register_event_callback(_collect)
+
     try:
         result = agent.run(instruction)
     finally:
         agent._executor.execute = original_execute
+        agent.clear_event_callback()
 
     return result.output, result.error, collected_events, result.success
 
@@ -160,7 +170,11 @@ def _run_instruction(instruction: str) -> tuple[Any, str | None, list[dict], boo
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "tools": agent._registry.list_names()}
+    return {
+        "status":  "ok",
+        "tools":   agent._registry.list_names(),
+        "planner": agent._planner is not None,
+    }
 
 
 @app.post("/execute", response_model=ExecuteResponse)
@@ -195,15 +209,10 @@ def voice_check():
 
 @app.post("/voice/start", response_model=VoiceStartResponse)
 def voice_start(req: VoiceStartRequest = VoiceStartRequest()):
-    """
-    Begin recording from the microphone in a background thread.
-    Returns immediately — the actual recording runs asynchronously.
-    Call /voice/stop when the user is done speaking.
-    """
     global _recording_thread, _recording_result, _recording_done
 
     try:
-        from voice_input import transcribe_from_mic, request_stop
+        from voice_input import transcribe_from_mic, request_stop  # noqa: F401
     except ImportError as exc:
         raise HTTPException(
             status_code=503,
@@ -219,6 +228,7 @@ def voice_start(req: VoiceStartRequest = VoiceStartRequest()):
 
         def _run():
             try:
+                from voice_input import transcribe_from_mic
                 transcript = transcribe_from_mic(
                     model_size=req.model_size,
                     max_duration=req.max_duration,
@@ -244,13 +254,6 @@ def voice_start(req: VoiceStartRequest = VoiceStartRequest()):
 
 @app.post("/voice/stop", response_model=VoiceStopResponse)
 def voice_stop():
-    """
-    Signal the background recording thread to stop, wait for transcription
-    to complete, and return the transcript.
-
-    This is what the frontend calls when the user clicks the mic button
-    a second time, presses Enter, or otherwise signals "I'm done speaking".
-    """
     global _recording_thread
 
     try:
@@ -260,16 +263,12 @@ def voice_stop():
 
     with _recording_lock:
         if _recording_thread is None or not _recording_thread.is_alive():
-            # Nothing was recording — return a clear error
             if not _recording_done.is_set():
                 return VoiceStopResponse(success=False, error="No active recording to stop.")
 
-    # Signal the recording loop to end
     request_stop()
 
-    # Wait up to 60 s for transcription (Whisper can be slow on first run)
     finished = _recording_done.wait(timeout=60)
-
     if not finished:
         return VoiceStopResponse(success=False, error="Transcription timed out.")
 
@@ -281,14 +280,11 @@ def voice_stop():
     )
 
 
-# ── Legacy /voice/transcribe (kept for backward compat) ─────────────────── #
-
 @app.post("/voice/transcribe", response_model=VoiceTranscribeResponse)
 def voice_transcribe(req: VoiceListenRequest = VoiceListenRequest()):
     """
-    Legacy single-shot endpoint: record for up to max_duration seconds,
-    then return the transcript.  Blocks the HTTP connection for the full
-    recording duration — use /voice/start + /voice/stop instead.
+    Legacy single-shot endpoint — kept for backward compat.
+    Use /voice/start + /voice/stop instead.
     """
     try:
         from voice_input import transcribe_from_mic
