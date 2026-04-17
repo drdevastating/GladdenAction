@@ -145,26 +145,9 @@ def _run_instruction(instruction: str) -> tuple[Any, str | None, list[dict], boo
     def _collect(event: dict) -> None:
         collected_events.append(event)
 
-    # Patch executor so tool-execution events are collected
-    original_execute = agent._executor.execute
-
-    def _patched_execute(tool_name: str, **kwargs: Any):
-        kwargs.pop("event_callback", None)
-        return original_execute(tool_name, event_callback=_collect, **kwargs)
-
-    agent._executor.execute = _patched_execute
-
-    # Register callback on Agent so planning/step events are also collected
-    agent.register_event_callback(_collect)
-
-    try:
-        result = agent.run(instruction)
-    finally:
-        agent._executor.execute = original_execute
-        agent.clear_event_callback()
+    result = agent.run(instruction, event_callback=_collect)
 
     return result.output, result.error, collected_events, result.success
-
 
 # ── Core routes ──────────────────────────────────────────────────────────── #
 
