@@ -688,3 +688,193 @@ html, body {
   margin: 6px 0;
   flex-shrink: 0;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   APPROVAL GATE BANNER
+   ═════════════════════════════════════════════════════════════════════════ */
+
+.approval-banner {
+  background: rgba(255, 209, 102, 0.06);
+  border: 1px solid rgba(255, 209, 102, 0.30);
+  border-radius: 8px;
+  margin-bottom: 12px;
+  overflow: hidden;
+  animation: approvalSlideIn 0.28s var(--ease-out) forwards;
+  position: relative;
+  flex-shrink: 0;
+}
+
+@keyframes approvalSlideIn {
+  from { opacity: 0; transform: translateY(-12px); max-height: 0; }
+  to   { opacity: 1; transform: translateY(0);     max-height: 600px; }
+}
+
+.approval-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px 6px;
+  background: rgba(255, 209, 102, 0.10);
+  border-bottom: 1px solid rgba(255, 209, 102, 0.18);
+}
+
+.approval-header.destructive {
+  background: rgba(255, 83, 112, 0.12);
+  border-bottom-color: rgba(255, 83, 112, 0.25);
+}
+
+.approval-icon {
+  font-size: 13px;
+}
+
+.approval-title {
+  font-family: var(--font-ui);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--c-warn);
+  flex: 1;
+}
+
+.approval-header.destructive .approval-title {
+  color: var(--c-error);
+}
+
+.approval-countdown {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--c-text-muted);
+  min-width: 28px;
+  text-align: right;
+}
+
+.approval-msg {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--c-text-dim);
+  padding: 6px 12px 4px;
+  line-height: 1.5;
+}
+
+/* Plan steps */
+.approval-plan {
+  padding: 4px 12px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.plan-step {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--c-text-dim);
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(255,255,255,0.025);
+}
+
+.plan-step.destructive {
+  background: rgba(255, 83, 112, 0.07);
+  color: rgba(255, 180, 180, 0.85);
+}
+
+.step-icon { font-size: 9px; }
+.step-num  {
+  font-weight: 700;
+  color: var(--c-accent-dim);
+  min-width: 18px;
+}
+.step-desc { flex: 1; word-break: break-word; }
+
+/* Action buttons */
+.approval-actions {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+  justify-content: flex-end;
+}
+
+.approval-btn {
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  padding: 5px 14px;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  pointer-events: all;
+  transition: all 0.15s var(--ease-in-out);
+}
+
+.approve-btn {
+  background: rgba(56, 217, 245, 0.18);
+  color: var(--c-accent);
+  border: 1px solid rgba(56, 217, 245, 0.35);
+}
+.approve-btn:hover {
+  background: rgba(56, 217, 245, 0.30);
+  box-shadow: 0 0 12px rgba(56, 217, 245, 0.25);
+  transform: translateY(-1px);
+}
+
+.reject-btn {
+  background: rgba(255, 83, 112, 0.12);
+  color: var(--c-error);
+  border: 1px solid rgba(255, 83, 112, 0.28);
+}
+.reject-btn:hover {
+  background: rgba(255, 83, 112, 0.22);
+  transform: translateY(-1px);
+}
+
+/* Auto-approve progress bar */
+.approval-progress {
+  height: 2px;
+  background: rgba(255,255,255,0.06);
+  overflow: hidden;
+}
+
+.approval-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--c-accent), var(--c-accent-2));
+  width: 100%;
+  transform-origin: left;
+  transform: scaleX(1);
+}
+
+.approval-progress-bar.running {
+  animation: progressShrink var(--dur, 8s) linear forwards;
+}
+
+@keyframes progressShrink {
+  from { transform: scaleX(1); }
+  to   { transform: scaleX(0); }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   TERMINAL OUTPUT LINES
+   ═════════════════════════════════════════════════════════════════════════ */
+
+.terminal-line {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: rgba(200, 230, 200, 0.82);
+  padding: 0 6px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  border-left: 2px solid rgba(79, 255, 176, 0.18);
+  margin-left: 4px;
+  animation: entryFade 0.08s var(--ease-out) forwards;
+  opacity: 0;
+}
+
+.terminal-line.stderr {
+  color: rgba(255, 180, 130, 0.80);
+  border-left-color: rgba(255, 150, 83, 0.25);
+}
