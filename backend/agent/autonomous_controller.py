@@ -1,52 +1,9 @@
 """
-agent/autonomous_controller.py
+agent/autonomous_controller.py  (fixed)
 
-AutonomousController — OpenClaw-style goal-driven execution loop.
-
-Architecture
-------------
-This module sits alongside the existing Agent and adds an optional
-autonomous execution mode.  It reuses:
-  - ToolExecutor  (execution gateway — unchanged)
-  - ToolRegistry  (tool discovery — unchanged)
-  - Groq SDK      (same client as Agent)
-  - perception.py (lightweight screen capture)
-
-It does NOT modify any existing tool, executor, or registry code.
-
-Modes
------
-Deterministic (default):  Agent.run(instruction)  — existing behaviour.
-Autonomous (new):         AutonomousController.run(goal)
-                          Triggered when instruction starts with "AUTO:".
-
-Execution loop
---------------
-for step in range(max_steps):
-    1. observe()   — optional screenshot + description
-    2. get_next_action(goal, context)  — ask LLM for next tool call
-    3. execute_step()  — run via ToolExecutor
-    4. is_goal_achieved(goal, context) — check if we're done
-    5. update context with result
-    6. break on goal achieved / failure / max steps
-
-Safety constraints
-------------------
-- Only ui_automation and system_control tools are allowed in auto mode.
-- Shell execution is never permitted (enforced by tool layer).
-- Hard cap of MAX_AUTONOMOUS_STEPS (default 8).
-- Every step emits structured events via event_callback.
-
-Event schema (stable)
----------------------
-{
-    "type":      "info"|"status"|"error",
-    "stage":     "<stage_name>",
-    "message":   "<description>",
-    "tool":      "autonomous_controller",
-    "timestamp": "<ISO-8601>",
-    "step":      <int>   # present on step-level events
-}
+Fix: When the LLM selects play_youtube_video without a 'query' argument,
+extract the search intent from the goal text instead of letting it fail.
+Same guard applied to other workflows with required string args.
 """
 
 from __future__ import annotations
@@ -70,7 +27,6 @@ EventCallback = Optional[Callable[[dict], None]]
 MAX_AUTONOMOUS_STEPS: int = 8
 _DEFAULT_MODEL = "llama-3.3-70b-versatile"
 
-# Tools allowed in autonomous mode — subset of all registered tools
 _ALLOWED_AUTO_TOOLS = frozenset({"ui_automation", "system_control"})
 
 
@@ -131,6 +87,13 @@ RULES:
 - Prefer ui_automation workflows over low-level system_control calls.
 - If the goal is already achieved (last_result shows success), output DONE.
 - Never invent new tools or workflows.
+- ALWAYS include ALL required arguments for the chosen workflow:
+    play_youtube_video  → MUST include "query" (string describing what to search)
+    send_whatsapp_desktop → MUST include "contact_name" and "message"
+    send_email_browser  → MUST include "recipient", "subject", "content"
+    launch_application  → MUST include "app_name"
+    create_file_notepad / create_file_vscode → MUST include "filename" and "content"
+    linkedin_action     → MUST include "name" and "action"
 
 RESPONSE FORMAT — respond ONLY with a valid JSON object, no markdown, no preamble:
 
@@ -165,6 +128,7 @@ CONTEXT:
 {context_text}
 
 What is the single next action?
+Remember: if using play_youtube_video, you MUST include a "query" field derived from the goal.
 """
 
 _GOAL_CHECK_SYSTEM = """\
@@ -192,20 +156,64 @@ Has the goal been fully achieved?
 """
 
 
+# ── Required argument fallback map ────────────────────────────────────────── #
+# Maps workflow → (required_key, fallback_extractor)
+# The extractor receives the goal string and returns a default value.
+
+def _extract_youtube_query(goal: str) -> str:
+    """Pull search terms from a YouTube-related goal."""
+    # Strip common action phrases to get the core search intent
+    goal_lower = goal.lower()
+    for prefix in [
+        "open youtube and play", "play a youtube video about", "play youtube video about",
+        "play a youtube video on", "search youtube for", "play a youtube",
+        "open youtube and search for", "find youtube video about", "watch a youtube video about",
+        "open youtube", "play", "watch",
+    ]:
+        if goal_lower.startswith(prefix):
+            remainder = goal[len(prefix):].strip()
+            if remainder:
+                return remainder
+    # Fall back: strip "youtube" keyword and return rest
+    cleaned = re.sub(r'\byoutube\b', '', goal, flags=re.IGNORECASE).strip(" ,.")
+    return cleaned if cleaned else goal
+
+
+_WORKFLOW_REQUIRED_FALLBACKS: dict[str, dict[str, Any]] = {
+    "play_youtube_video": {
+        "query": _extract_youtube_query,
+    },
+}
+
+
+def _patch_missing_args(workflow: str, arguments: dict, goal: str) -> dict:
+    """
+    If a workflow has known required arguments that are missing or empty,
+    fill them in using goal-derived fallbacks.
+    Returns a (possibly modified) copy of arguments.
+    """
+    fallbacks = _WORKFLOW_REQUIRED_FALLBACKS.get(workflow)
+    if not fallbacks:
+        return arguments
+
+    patched = dict(arguments)
+    for key, extractor in fallbacks.items():
+        if not patched.get(key):
+            value = extractor(goal) if callable(extractor) else extractor
+            if value:
+                logger.info(
+                    "autonomous: patched missing '%s' for workflow '%s' → %r",
+                    key, workflow, value[:60],
+                )
+                patched[key] = value
+    return patched
+
+
 # ── AutonomousController ──────────────────────────────────────────────────── #
 
 class AutonomousController:
     """
     Goal-driven iterative execution loop.
-
-    Parameters
-    ----------
-    registry    : ToolRegistry
-    executor    : ToolExecutor
-    groq_client : groq.Groq
-    model_name  : str
-    max_steps   : int   hard cap on loop iterations (default MAX_AUTONOMOUS_STEPS)
-    use_perception : bool  whether to capture screenshots each step (default False)
     """
 
     def __init__(
@@ -233,11 +241,6 @@ class AutonomousController:
         goal: str,
         event_callback: EventCallback = None,
     ) -> ToolResult:
-        """
-        Execute *goal* autonomously.
-
-        Returns a ToolResult summarising the overall outcome.
-        """
         goal = goal.strip()
         if not goal:
             return ToolResult(success=False, error="Goal must not be empty.")
@@ -250,7 +253,7 @@ class AutonomousController:
         context: dict[str, Any] = {
             "goal":     goal,
             "step":     0,
-            "history":  [],   # list of {step, tool, arguments, success, output}
+            "history":  [],
             "last_result": None,
             "screen_desc": None,
         }
@@ -292,20 +295,24 @@ class AutonomousController:
             arguments = action.get("arguments", {})
             reasoning = action.get("reasoning", "")
 
+            # ── 3. Patch missing required arguments ─────────────────── #
+            workflow = arguments.get("workflow", "")
+            if tool_name == "ui_automation" and workflow:
+                arguments = _patch_missing_args(workflow, arguments, goal)
+
             _emit(event_callback, _event(
                 "info", "step_generated",
                 f"Step {step_idx}: tool={tool_name!r}  reasoning={reasoning!r}",
                 step=step_idx,
             ))
 
-            # ── 3. Check for terminal actions ───────────────────────── #
+            # ── 4. Check for terminal actions ───────────────────────── #
             if tool_name == "DONE":
                 _emit(event_callback, _event(
                     "status", "goal_achieved",
                     f"LLM declared goal achieved: {reasoning}",
                     step=step_idx,
                 ))
-                last = context["last_result"]
                 final_result = ToolResult(
                     success=True,
                     output=f"Goal achieved after {step_idx - 1} step(s). {reasoning}",
@@ -326,7 +333,7 @@ class AutonomousController:
                 )
                 break
 
-            # ── 4. Safety: only allowed tools ──────────────────────── #
+            # ── 5. Safety: only allowed tools ──────────────────────── #
             if tool_name not in _ALLOWED_AUTO_TOOLS:
                 msg = (
                     f"Tool {tool_name!r} is not permitted in autonomous mode. "
@@ -338,7 +345,7 @@ class AutonomousController:
                 final_result = ToolResult(success=False, error=msg)
                 break
 
-            # ── 5. Execute step ─────────────────────────────────────── #
+            # ── 6. Execute step ─────────────────────────────────────── #
             _emit(event_callback, _event(
                 "info", "step_started",
                 f"Step {step_idx}: executing {tool_name!r} …",
@@ -384,7 +391,7 @@ class AutonomousController:
                 )
                 break
 
-            # ── 6. Check goal completion ────────────────────────────── #
+            # ── 7. Check goal completion ────────────────────────────── #
             if self._is_goal_achieved(goal, context, event_callback, step_idx):
                 _emit(event_callback, _event(
                     "status", "goal_achieved",
@@ -405,7 +412,6 @@ class AutonomousController:
             )
 
         else:
-            # loop exhausted without break
             _emit(event_callback, _event(
                 "error", "autonomous_stopped",
                 f"Max steps ({self._max_steps}) reached.",
@@ -428,11 +434,6 @@ class AutonomousController:
         goal: str,
         context: dict[str, Any],
     ) -> Optional[dict[str, Any]]:
-        """
-        Ask the LLM to return the next action as JSON.
-
-        Returns a parsed dict or None on failure.
-        """
         context_lines: list[str] = []
 
         if context["last_result"] is not None:
@@ -488,12 +489,6 @@ class AutonomousController:
         callback: EventCallback,
         step: int,
     ) -> bool:
-        """
-        Ask the LLM whether the goal has been achieved.
-
-        Falls back to a heuristic (last step succeeded + ≥1 step done)
-        if the LLM call fails.
-        """
         last = context["last_result"]
         history = context["history"]
 
@@ -536,7 +531,6 @@ class AutonomousController:
         except Exception as exc:  # noqa: BLE001
             logger.warning("AutonomousController._is_goal_achieved LLM call failed: %s", exc)
 
-        # Heuristic fallback: goal achieved if last step succeeded
         return bool(last and last.success)
 
     # ================================================================== #
@@ -544,10 +538,6 @@ class AutonomousController:
     # ================================================================== #
 
     def _observe(self, callback: EventCallback, step: int) -> Optional[str]:
-        """
-        Capture screen and generate a brief text description.
-        Returns None if perception is disabled or capture fails.
-        """
         _emit(callback, _event(
             "info", "observation_collected",
             f"Step {step}: capturing screen observation…",
@@ -572,8 +562,6 @@ class AutonomousController:
 
     @staticmethod
     def _parse_json_response(text: str) -> Optional[dict[str, Any]]:
-        """Extract and parse the first JSON object from *text*."""
-        # Strip markdown fences if present
         fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
         if fenced:
             text = fenced.group(1)

@@ -1,21 +1,19 @@
 """
 main.py
 
-Interactive REPL entry point for the AI Agent backend.
+Interactive REPL entry point — GladdenAction v5 (Claude Code features).
 
-Changes from previous version
-------------------------------
-- Imports and constructs a Planner instance.
-- Passes it to Agent constructor.
-- Registers the console event callback on the Agent so planning events
-  (planning_started, step_started, etc.) appear in the REPL output.
-- Everything else is unchanged.
+New tools registered
+--------------------
+    code_edit   — surgical file read/edit/insert (str_replace diff)
+    context     — project scan, find_files, grep_files, file_summary
+    shell       — live terminal execution (python, npm, g++, pytest, git…)
 
-Registered tools
-----------------
-    ui_automation    — visible desktop UI workflows (Notepad, VS Code, Gmail, WhatsApp)
-    file_creation    — direct/silent file writes
-    system_control   — secure OS capability engine (process / system / filesystem)
+Approval gate
+-------------
+    Plans are shown before execution. Auto-approved after 8s.
+    Type 'reject' at the REPL prompt to cancel the pending plan.
+    Type 'approve' to immediately proceed.
 """
 
 from __future__ import annotations
@@ -23,6 +21,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import threading
 
 from dotenv import load_dotenv
 
@@ -36,9 +35,13 @@ logging.basicConfig(
 logger = logging.getLogger("main")
 
 from agent.agent import Agent
+from agent.approval_gate import ApprovalGate
 from agent.planner import Planner
 from core.tools import FileCreationTool
+from core.tools.code_edit_tool import CodeEditTool
+from core.tools.context_tool import ContextTool
 from core.tools.registry import ToolRegistry
+from core.tools.shell_tool import ShellTool
 from core.tools.system_control_tool import SystemControlTool
 from core.tools.ui_automation_tool import UIAutomationTool
 from execution.executor import ToolExecutor
@@ -49,24 +52,49 @@ from execution.executor import ToolExecutor
 # ============================================================================ #
 
 _COLOURS = {
-    "info":     "\033[94m",   # blue
-    "status":   "\033[92m",   # green
-    "error":    "\033[91m",   # red
-    "security": "\033[95m",   # magenta
-    "reset":    "\033[0m",
+    "info":              "\033[94m",   # blue
+    "status":            "\033[92m",   # green
+    "error":             "\033[91m",   # red
+    "security":          "\033[95m",   # magenta
+    "approval_required": "\033[93m",   # yellow
+    "approval_decision": "\033[96m",   # cyan
+    "reset":             "\033[0m",
 }
 
 
 def console_event_callback(event: dict) -> None:
     etype  = event.get("type", "info")
-    colour = _COLOURS.get(etype, "")
+    colour = _COLOURS.get(etype, _COLOURS["info"])
     reset  = _COLOURS["reset"]
+
+    # Special rendering for approval events
+    if etype == "approval_required":
+        stage = event.get("stage", "")
+        msg   = event.get("message", "")
+        print(f"\n  {colour}{'═'*60}{reset}")
+        print(f"  {colour}⚠  APPROVAL REQUIRED  — {stage}{reset}")
+        print(f"  {colour}{msg}{reset}")
+        if "plan" in event:
+            for step in event["plan"]:
+                marker = "🔴" if step.get("destructive") else "🔵"
+                print(f"    {marker} Step {step['step']}: {step['description']}")
+        print(f"  {colour}  Type 'approve' to proceed immediately, 'reject' to cancel.{reset}")
+        print(f"  {colour}{'═'*60}{reset}\n")
+        return
+
+    if etype == "approval_decision":
+        stage = event.get("stage", "")
+        icons = {"approved": "✅", "rejected": "❌", "auto_approved": "⏱ "}
+        icon  = icons.get(stage, "•")
+        print(f"  {colour}{icon} {event.get('message', '')}{reset}\n")
+        return
+
     print(
         f"  {colour}[{etype.upper():8}]{reset} "
-        f"stage={event['stage']:<32} "
-        f"tool={event['tool']:<36} "
-        f"@ {event['timestamp']}\n"
-        f"             └─ {event['message']}"
+        f"stage={event.get('stage',''):<32} "
+        f"tool={event.get('tool',''):<36} "
+        f"@ {event.get('timestamp','')}\n"
+        f"             └─ {event.get('message','')}"
     )
 
 
@@ -74,34 +102,34 @@ def console_event_callback(event: dict) -> None:
 #  Bootstrap                                                                    #
 # ============================================================================ #
 
-def build_agent() -> Agent:
-    """Wire up the full tool stack, planner, and return a ready Agent."""
+def build_agent() -> tuple[Agent, ApprovalGate]:
     api_key = os.environ.get("GROQ_API_KEY", "").strip()
     if not api_key:
         print("\n[ERROR] GROQ_API_KEY environment variable is not set.")
         print("        Get your key at https://console.groq.com")
-        print("        Then:  export GROQ_API_KEY=your_key_here")
         sys.exit(1)
 
     registry = ToolRegistry()
-    registry.register(UIAutomationTool())   # primary: visible UI workflows
-    registry.register(FileCreationTool())   # fallback: silent file writes
-    registry.register(SystemControlTool())  # secure OS control engine
+    registry.register(UIAutomationTool())
+    registry.register(FileCreationTool())
+    registry.register(SystemControlTool())
+    registry.register(CodeEditTool())       # surgical file editing
+    registry.register(ContextTool())        # project awareness
+    registry.register(ShellTool())          # live terminal execution
 
     executor = ToolExecutor(registry)
-
-    # ── Planner (new) ──────────────────────────────────────────────────
-    planner = Planner(api_key=api_key)
+    planner  = Planner(api_key=api_key)
+    gate     = ApprovalGate(auto_approve_delay=8.0, destructive_delay=15.0)
 
     agent = Agent(
         registry=registry,
         executor=executor,
         api_key=api_key,
-        planner=planner,      # inject the planner
+        planner=planner,
     )
 
-    logger.info("Agent ready — tools: %s  planner: enabled", registry.list_names())
-    return agent
+    logger.info("Agent v5 ready — tools: %s", registry.list_names())
+    return agent, gate
 
 
 # ============================================================================ #
@@ -110,38 +138,35 @@ def build_agent() -> Agent:
 
 BANNER = """
 ╔══════════════════════════════════════════════════════════════════════╗
-║   AI Agent — Jarvis Mode  (Groq + Multi-Step Planner + OS Control)  ║
+║  GladdenAction v5 — Claude Code Features Enabled                    ║
 ╠══════════════════════════════════════════════════════════════════════╣
-║  UI Automation                                                       ║
+║  Code Editing (like Claude Code)                                     ║
+║    "Read main.py and fix the bug on line 42"                         ║
+║    "Scan my project and add type hints to all functions"             ║
+║    "Find all TODO comments in the codebase"                          ║
+║    "Refactor the Agent class to use async"                           ║
+║                                                                      ║
+║  Terminal Execution (live output)                                    ║
+║    "Run pytest and show me the failures"                             ║
+║    "npm install and then npm run build"                              ║
+║    "Compile and run my C++ file"                                     ║
+║    "Run git status and git log --oneline -10"                        ║
+║                                                                      ║
+║  Project Awareness                                                   ║
+║    "Scan my project structure"                                       ║
+║    "Find all Python files in src/"                                   ║
+║    "Search for 'TODO' across all files"                              ║
+║    "Summarise what executor.py does"                                 ║
+║                                                                      ║
+║  UI Automation (unchanged)                                           ║
 ║    "Open Notepad and write a shopping list"                          ║
-║    "Create a C++ Hello World in VS Code"                             ║
-║    "Send an email to you@example.com saying hello"                   ║
-║    "Open Chrome then take a screenshot"  ← multi-step               ║
+║    "Send an email to bob@example.com"                                ║
 ║                                                                      ║
-║  Process Control                                                     ║
-║    "Show top 5 processes by RAM"                                     ║
-║    "Inspect chrome.exe"                                              ║
-║    "Kill notepad.exe"                                                ║
+║  Approval Gate                                                       ║
+║    Plans auto-approve after 8s (15s for destructive actions)         ║
+║    Type 'approve' or 'reject' to control pending plans               ║
 ║                                                                      ║
-║  System Metrics                                                      ║
-║    "What is my CPU usage?"                                           ║
-║    "Check memory stats"                                              ║
-║    "Show disk usage for C:"                                          ║
-║    "How long has the PC been running?"                               ║
-║                                                                      ║
-║  Filesystem                                                          ║
-║    "List files in my Documents folder"                               ║
-║    "Get info about report.pdf"                                       ║
-║    "Create a folder called MyProject on the Desktop"                 ║
-║    "Rename notes.txt to todo.txt"                                    ║
-║    "Delete temp.log"                                                 ║
-║                                                                      ║
-║  Multi-Step Examples                                                 ║
-║    "Show CPU usage and memory stats"                                 ║
-║    "Open Chrome, then take a screenshot"                             ║
-║    "List top RAM processes, then kill notepad.exe"                   ║
-║                                                                      ║
-║  Commands:  tools | planner on/off | quit | exit                     ║
+║  Commands: tools | approve | reject | planner on/off | quit         ║
 ╚══════════════════════════════════════════════════════════════════════╝
 """
 
@@ -158,7 +183,7 @@ def _print_result(result) -> None:
         print(f"  Error    : {result.error}")
 
 
-def repl(agent: Agent) -> None:
+def repl(agent: Agent, gate: ApprovalGate) -> None:
     print(BANNER)
     print(f"  Agent : {agent}")
     print()
@@ -184,7 +209,16 @@ def repl(agent: Agent) -> None:
             print()
             continue
 
-        # Toggle planner on/off from the REPL for easy testing
+        if raw.lower() == "approve":
+            gate.approve("User typed 'approve'")
+            print("  ✅  Approved.")
+            continue
+
+        if raw.lower() == "reject":
+            gate.reject("User typed 'reject'")
+            print("  ❌  Rejected — plan cancelled.")
+            continue
+
         if raw.lower() == "planner on":
             if agent._planner is None:
                 api_key = os.environ.get("GROQ_API_KEY", "").strip()
@@ -197,7 +231,7 @@ def repl(agent: Agent) -> None:
             print("  Planner: OFF  (single-step mode)")
             continue
 
-        # ── Patch executor + register agent callback for this run ─────── #
+        # ── Patch executor with callback ──────────────────────────── #
         original_execute = agent._executor.execute
 
         def execute_with_callback(tool_name, **kwargs):
@@ -208,17 +242,14 @@ def repl(agent: Agent) -> None:
             )
 
         agent._executor.execute = execute_with_callback
-        agent.register_event_callback(console_event_callback)
 
         print()
         print("  ── Execution events ─────────────────────────────────────────")
-        result = agent.run(raw)
+        result = agent.run(raw, event_callback=console_event_callback)
         print("  ─────────────────────────────────────────────────────────────")
         _print_result(result)
 
-        # Restore originals
         agent._executor.execute = original_execute
-        agent.clear_event_callback()
         print()
 
 
@@ -227,5 +258,5 @@ def repl(agent: Agent) -> None:
 # ============================================================================ #
 
 if __name__ == "__main__":
-    agent = build_agent()
-    repl(agent)
+    agent, gate = build_agent()
+    repl(agent, gate)

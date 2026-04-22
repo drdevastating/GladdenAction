@@ -1,25 +1,16 @@
 """
-api.py  —  GladdenAction FastAPI backend  (updated: Planner integration)
+api.py  —  GladdenAction FastAPI backend  (v5 — Claude Code features)
 
-Changes from previous version
-------------------------------
-- Imports and constructs a Planner instance alongside the Agent.
-- Passes it to Agent constructor.
-- _run_instruction() now also registers a callback on the Agent so that
-  planning/step lifecycle events are collected into the same events list
-  that the frontend already streams.
-- All existing routes, schemas, and voice endpoints are unchanged.
-
-Voice flow (two-step design)
----------------------------------
-1. Frontend POSTs /voice/start  → server begins recording in a background
-   thread and returns immediately with {"recording": true}.
-2. User speaks.
-3. Frontend POSTs /voice/stop   → server signals the recording thread to
-   stop, waits for transcription to finish, returns the transcript.
-4. Frontend populates the input box with the transcript.
-5. User reviews / edits, then presses Enter.
-6. Frontend POSTs /execute      → agent runs as normal.
+New in this version
+-------------------
+- CodeEditTool  : surgical file read/edit (like Claude Code str_replace)
+- ContextTool   : project scanning, find_files, grep (like Claude Code context)
+- ShellTool     : live-streaming terminal execution
+- ApprovalGate  : show plan, auto-run unless user intervenes
+- POST /approve : user approves pending plan/step
+- POST /reject  : user rejects pending plan/step
+- GET  /gate    : poll gate status
+- All existing routes and voice endpoints unchanged.
 """
 
 from __future__ import annotations
@@ -46,15 +37,23 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from agent.agent import Agent
+from agent.approval_gate import ApprovalGate
 from agent.planner import Planner
 from core.tools import FileCreationTool
+from core.tools.code_edit_tool import CodeEditTool
+from core.tools.context_tool import ContextTool
 from core.tools.registry import ToolRegistry
+from core.tools.shell_tool import ShellTool
 from core.tools.system_control_tool import SystemControlTool
 from core.tools.ui_automation_tool import UIAutomationTool
 from execution.executor import ToolExecutor
 
 
 # ── Build agent once at startup ─────────────────────────────────────────── #
+
+# Global approval gate — shared across the session
+_approval_gate = ApprovalGate(auto_approve_delay=8.0, destructive_delay=15.0)
+
 
 def _build_agent() -> Agent:
     api_key = os.environ.get("GROQ_API_KEY", "").strip()
@@ -66,16 +65,23 @@ def _build_agent() -> Agent:
     registry.register(UIAutomationTool())
     registry.register(FileCreationTool())
     registry.register(SystemControlTool())
+    registry.register(CodeEditTool())          # NEW: surgical code editing
+    registry.register(ContextTool())           # NEW: project/codebase awareness
+    registry.register(ShellTool())             # NEW: live terminal execution
 
     executor = ToolExecutor(registry)
     planner  = Planner(api_key=api_key)
-    agent    = Agent(registry=registry, executor=executor, api_key=api_key, planner=planner)
+    agent    = Agent(
+        registry=registry,
+        executor=executor,
+        api_key=api_key,
+        planner=planner,
+    )
     logger.info("Agent ready — tools: %s  planner: enabled", registry.list_names())
     return agent
 
 
 agent = _build_agent()
-
 
 # ── Voice recording state ────────────────────────────────────────────────── #
 
@@ -87,7 +93,7 @@ _recording_lock   = threading.Lock()
 
 # ── FastAPI app ──────────────────────────────────────────────────────────── #
 
-app = FastAPI(title="Gladden API", version="4.0.0")
+app = FastAPI(title="Gladden API", version="5.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -107,6 +113,13 @@ class ExecuteResponse(BaseModel):
     output:  Any        = None
     error:   str | None = None
     events:  list[dict] = []
+
+class ApprovalRequest(BaseModel):
+    reason: str = ""
+
+class GateStatusResponse(BaseModel):
+    pending:  bool
+    approved: bool | None = None
 
 class VoiceStartRequest(BaseModel):
     model_size:   str   = "base"
@@ -146,8 +159,8 @@ def _run_instruction(instruction: str) -> tuple[Any, str | None, list[dict], boo
         collected_events.append(event)
 
     result = agent.run(instruction, event_callback=_collect)
-
     return result.output, result.error, collected_events, result.success
+
 
 # ── Core routes ──────────────────────────────────────────────────────────── #
 
@@ -157,6 +170,7 @@ def health():
         "status":  "ok",
         "tools":   agent._registry.list_names(),
         "planner": agent._planner is not None,
+        "version": "5.0.0",
     }
 
 
@@ -164,24 +178,44 @@ def health():
 def execute(req: InstructionRequest):
     if not req.instruction.strip():
         raise HTTPException(status_code=400, detail="instruction must not be empty.")
-
     output, error, events, success = _run_instruction(req.instruction)
-
     return ExecuteResponse(success=success, output=output, error=error, events=events)
+
+
+# ── Approval gate routes ─────────────────────────────────────────────────── #
+
+@app.post("/approve")
+def approve(req: ApprovalRequest = ApprovalRequest()):
+    """Signal the approval gate to proceed."""
+    _approval_gate.approve(req.reason or "User approved via UI")
+    return {"status": "approved"}
+
+
+@app.post("/reject")
+def reject(req: ApprovalRequest = ApprovalRequest()):
+    """Signal the approval gate to cancel the pending plan/step."""
+    _approval_gate.reject(req.reason or "User rejected via UI")
+    return {"status": "rejected"}
+
+
+@app.get("/gate", response_model=GateStatusResponse)
+def gate_status():
+    """Poll whether the gate is waiting for a decision."""
+    return GateStatusResponse(
+        pending=_approval_gate.is_pending,
+    )
 
 
 # ── Voice routes ─────────────────────────────────────────────────────────── #
 
 @app.get("/voice/check", response_model=VoiceCheckResponse)
 def voice_check():
-    """Return which voice dependencies are installed."""
     try:
         from voice_input import check_dependencies
         deps = check_dependencies()
     except Exception as exc:
         logger.warning("voice_input module not available: %s", exc)
         deps = {"sounddevice": False, "faster_whisper": False, "numpy": False}
-
     return VoiceCheckResponse(
         sounddevice=deps.get("sounddevice", False),
         faster_whisper=deps.get("faster_whisper", False),
@@ -219,7 +253,7 @@ def voice_start(req: VoiceStartRequest = VoiceStartRequest()):
                 _recording_result["transcript"] = transcript
                 _recording_result["success"]    = bool(transcript)
                 if not transcript:
-                    _recording_result["error"] = "No speech detected. Please speak clearly and try again."
+                    _recording_result["error"] = "No speech detected."
             except Exception as exc:
                 logger.exception("Recording thread failed")
                 _recording_result["success"]    = False
@@ -231,7 +265,6 @@ def voice_start(req: VoiceStartRequest = VoiceStartRequest()):
         _recording_thread = threading.Thread(target=_run, daemon=True)
         _recording_thread.start()
 
-    logger.info("Voice recording started (max %.0fs).", req.max_duration)
     return VoiceStartResponse(recording=True)
 
 
@@ -250,7 +283,6 @@ def voice_stop():
                 return VoiceStopResponse(success=False, error="No active recording to stop.")
 
     request_stop()
-
     finished = _recording_done.wait(timeout=60)
     if not finished:
         return VoiceStopResponse(success=False, error="Transcription timed out.")
@@ -265,18 +297,13 @@ def voice_stop():
 
 @app.post("/voice/transcribe", response_model=VoiceTranscribeResponse)
 def voice_transcribe(req: VoiceListenRequest = VoiceListenRequest()):
-    """
-    Legacy single-shot endpoint — kept for backward compat.
-    Use /voice/start + /voice/stop instead.
-    """
     try:
         from voice_input import transcribe_from_mic
     except ImportError as exc:
         raise HTTPException(
             status_code=503,
-            detail=f"Voice module unavailable: {exc}. Install: pip install faster-whisper sounddevice",
+            detail=f"Voice module unavailable: {exc}.",
         )
-
     try:
         transcript = transcribe_from_mic(
             model_size=req.model_size,
@@ -291,7 +318,6 @@ def voice_transcribe(req: VoiceListenRequest = VoiceListenRequest()):
     if not transcript:
         return VoiceTranscribeResponse(
             success=False,
-            error="No speech detected. Please speak clearly and try again.",
+            error="No speech detected.",
         )
-
     return VoiceTranscribeResponse(success=True, transcript=transcript)
