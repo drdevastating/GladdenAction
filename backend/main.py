@@ -1,13 +1,20 @@
 """
 main.py
 
-Interactive REPL entry point — GladdenAction v5 (Claude Code features).
+Interactive REPL entry point — GladdenAction v6 (+ NL→Command feature).
 
-New tools registered
---------------------
-    code_edit   — surgical file read/edit/insert (str_replace diff)
-    context     — project scan, find_files, grep_files, file_summary
-    shell       — live terminal execution (python, npm, g++, pytest, git…)
+New in v6
+---------
+    nl_command  — Convert plain English to CMD/PowerShell commands via LLM,
+                  then execute them safely through ShellTool's whitelist.
+
+Usage examples
+--------------
+    You › I always forget how to find which process is using port 8080
+    You › Give me the command to list all python files recursively
+    You › What's the command to compress the dist folder into a zip?
+    You › Run a command to show top 10 largest files here
+    You › What git command reverts the last commit without losing changes?
 
 Approval gate
 -------------
@@ -40,6 +47,7 @@ from agent.planner import Planner
 from core.tools import FileCreationTool
 from core.tools.code_edit_tool import CodeEditTool
 from core.tools.context_tool import ContextTool
+from core.tools.nl_command_tool import NLCommandTool          # ← NEW
 from core.tools.registry import ToolRegistry
 from core.tools.shell_tool import ShellTool
 from core.tools.system_control_tool import SystemControlTool
@@ -67,7 +75,6 @@ def console_event_callback(event: dict) -> None:
     colour = _COLOURS.get(etype, _COLOURS["info"])
     reset  = _COLOURS["reset"]
 
-    # Special rendering for approval events
     if etype == "approval_required":
         stage = event.get("stage", "")
         msg   = event.get("message", "")
@@ -89,12 +96,25 @@ def console_event_callback(event: dict) -> None:
         print(f"  {colour}{icon} {event.get('message', '')}{reset}\n")
         return
 
+    # Highlight translated commands
+    stage = event.get("stage", "")
+    msg   = event.get("message", "")
+    if stage == "command_ready":
+        cmd_colour = "\033[93m"   # yellow for the command itself
+        print(f"\n  {cmd_colour}{'─'*56}{reset}")
+        print(f"  {cmd_colour}💻 TRANSLATED COMMAND:{reset}")
+        # Extract just the command part after "Translated command: "
+        cmd = msg.replace("Translated command: ", "").strip()
+        print(f"  {cmd_colour}   {cmd}{reset}")
+        print(f"  {cmd_colour}{'─'*56}{reset}\n")
+        return
+
     print(
         f"  {colour}[{etype.upper():8}]{reset} "
-        f"stage={event.get('stage',''):<32} "
+        f"stage={stage:<32} "
         f"tool={event.get('tool',''):<36} "
         f"@ {event.get('timestamp','')}\n"
-        f"             └─ {event.get('message','')}"
+        f"             └─ {msg}"
     )
 
 
@@ -113,9 +133,10 @@ def build_agent() -> tuple[Agent, ApprovalGate]:
     registry.register(UIAutomationTool())
     registry.register(FileCreationTool())
     registry.register(SystemControlTool())
-    registry.register(CodeEditTool())       # surgical file editing
-    registry.register(ContextTool())        # project awareness
-    registry.register(ShellTool())          # live terminal execution
+    registry.register(CodeEditTool())
+    registry.register(ContextTool())
+    registry.register(ShellTool())
+    registry.register(NLCommandTool())      # ← NEW
 
     executor = ToolExecutor(registry)
     planner  = Planner(api_key=api_key)
@@ -128,7 +149,7 @@ def build_agent() -> tuple[Agent, ApprovalGate]:
         planner=planner,
     )
 
-    logger.info("Agent v5 ready — tools: %s", registry.list_names())
+    logger.info("Agent v6 ready — tools: %s", registry.list_names())
     return agent, gate
 
 
@@ -138,33 +159,28 @@ def build_agent() -> tuple[Agent, ApprovalGate]:
 
 BANNER = """
 ╔══════════════════════════════════════════════════════════════════════╗
-║  GladdenAction v5 — Claude Code Features Enabled                    ║
+║  GladdenAction v6 — Natural Language → Shell Commands Added!        ║
 ╠══════════════════════════════════════════════════════════════════════╣
+║  🆕 NL → Command (never Google a command again!)                    ║
+║    "I always forget how to find what's on port 8080"                ║
+║    "Give me the command to list all .py files recursively"          ║
+║    "What's the git command to undo the last commit?"                ║
+║    "How do I compress the dist folder into a zip?"                  ║
+║    "Run a command to show top 10 largest files here"                ║
+║    "Check what's listening on port 3000"                            ║
+║    "What command shows all environment variables?"                  ║
+║                                                                      ║
 ║  Code Editing (like Claude Code)                                     ║
 ║    "Read main.py and fix the bug on line 42"                         ║
-║    "Scan my project and add type hints to all functions"             ║
 ║    "Find all TODO comments in the codebase"                          ║
-║    "Refactor the Agent class to use async"                           ║
 ║                                                                      ║
 ║  Terminal Execution (live output)                                    ║
 ║    "Run pytest and show me the failures"                             ║
 ║    "npm install and then npm run build"                              ║
-║    "Compile and run my C++ file"                                     ║
-║    "Run git status and git log --oneline -10"                        ║
-║                                                                      ║
-║  Project Awareness                                                   ║
-║    "Scan my project structure"                                       ║
-║    "Find all Python files in src/"                                   ║
-║    "Search for 'TODO' across all files"                              ║
-║    "Summarise what executor.py does"                                 ║
 ║                                                                      ║
 ║  UI Automation (unchanged)                                           ║
 ║    "Open Notepad and write a shopping list"                          ║
 ║    "Send an email to bob@example.com"                                ║
-║                                                                      ║
-║  Approval Gate                                                       ║
-║    Plans auto-approve after 8s (15s for destructive actions)         ║
-║    Type 'approve' or 'reject' to control pending plans               ║
 ║                                                                      ║
 ║  Commands: tools | approve | reject | planner on/off | quit         ║
 ╚══════════════════════════════════════════════════════════════════════╝
@@ -177,10 +193,17 @@ def _print_result(result) -> None:
         print("  ✅  Success")
         print(f"  Output   : {result.output}")
         if result.metadata:
-            print(f"  Metadata : {result.metadata}")
+            # Highlight the translated command if present
+            cmd = result.metadata.get("translated_command")
+            if cmd:
+                print(f"  Command  : \033[93m{cmd}\033[0m")
+            else:
+                print(f"  Metadata : {result.metadata}")
     else:
         print("  ❌  Failed")
         print(f"  Error    : {result.error}")
+        if result.metadata and result.metadata.get("translated_command"):
+            print(f"  Command was: \033[93m{result.metadata['translated_command']}\033[0m")
 
 
 def repl(agent: Agent, gate: ApprovalGate) -> None:

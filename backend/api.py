@@ -1,16 +1,13 @@
 """
-api.py  —  GladdenAction FastAPI backend  (v5 — Claude Code features)
+api.py  —  GladdenAction FastAPI backend  (v6 — NL→Command feature)
 
-New in this version
--------------------
-- CodeEditTool  : surgical file read/edit (like Claude Code str_replace)
-- ContextTool   : project scanning, find_files, grep (like Claude Code context)
-- ShellTool     : live-streaming terminal execution
-- ApprovalGate  : show plan, auto-run unless user intervenes
-- POST /approve : user approves pending plan/step
-- POST /reject  : user rejects pending plan/step
-- GET  /gate    : poll gate status
-- All existing routes and voice endpoints unchanged.
+New in v6
+---------
+- NLCommandTool : Convert plain English to CMD/PowerShell via Groq LLM,
+                  execute through ShellTool safety whitelist.
+- GET /nl_command/preview : Translate a request and return the command
+                            without executing (for Electron UI preview).
+- All existing routes unchanged.
 """
 
 from __future__ import annotations
@@ -42,6 +39,7 @@ from agent.planner import Planner
 from core.tools import FileCreationTool
 from core.tools.code_edit_tool import CodeEditTool
 from core.tools.context_tool import ContextTool
+from core.tools.nl_command_tool import NLCommandTool          # ← NEW
 from core.tools.registry import ToolRegistry
 from core.tools.shell_tool import ShellTool
 from core.tools.system_control_tool import SystemControlTool
@@ -51,7 +49,6 @@ from execution.executor import ToolExecutor
 
 # ── Build agent once at startup ─────────────────────────────────────────── #
 
-# Global approval gate — shared across the session
 _approval_gate = ApprovalGate(auto_approve_delay=8.0, destructive_delay=15.0)
 
 
@@ -65,9 +62,10 @@ def _build_agent() -> Agent:
     registry.register(UIAutomationTool())
     registry.register(FileCreationTool())
     registry.register(SystemControlTool())
-    registry.register(CodeEditTool())          # NEW: surgical code editing
-    registry.register(ContextTool())           # NEW: project/codebase awareness
-    registry.register(ShellTool())             # NEW: live terminal execution
+    registry.register(CodeEditTool())
+    registry.register(ContextTool())
+    registry.register(ShellTool())
+    registry.register(NLCommandTool())      # ← NEW
 
     executor = ToolExecutor(registry)
     planner  = Planner(api_key=api_key)
@@ -77,7 +75,7 @@ def _build_agent() -> Agent:
         api_key=api_key,
         planner=planner,
     )
-    logger.info("Agent ready — tools: %s  planner: enabled", registry.list_names())
+    logger.info("Agent v6 ready — tools: %s  planner: enabled", registry.list_names())
     return agent
 
 
@@ -93,7 +91,7 @@ _recording_lock   = threading.Lock()
 
 # ── FastAPI app ──────────────────────────────────────────────────────────── #
 
-app = FastAPI(title="Gladden API", version="5.0.0")
+app = FastAPI(title="Gladden API", version="6.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -120,6 +118,23 @@ class ApprovalRequest(BaseModel):
 class GateStatusResponse(BaseModel):
     pending:  bool
     approved: bool | None = None
+
+# ── NEW: NL Command schemas ──────────────────────────────────────────────── #
+
+class NLCommandPreviewRequest(BaseModel):
+    request: str
+    working_dir: str = ""
+
+class NLCommandPreviewResponse(BaseModel):
+    success: bool
+    command: str | None = None
+    error:   str | None = None
+
+class NLCommandRunRequest(BaseModel):
+    request:     str
+    working_dir: str = ""
+
+# ── Voice schemas ────────────────────────────────────────────────────────── #
 
 class VoiceStartRequest(BaseModel):
     model_size:   str   = "base"
@@ -170,7 +185,7 @@ def health():
         "status":  "ok",
         "tools":   agent._registry.list_names(),
         "planner": agent._planner is not None,
-        "version": "5.0.0",
+        "version": "6.0.0",
     }
 
 
@@ -182,28 +197,71 @@ def execute(req: InstructionRequest):
     return ExecuteResponse(success=success, output=output, error=error, events=events)
 
 
+# ── NL Command routes ────────────────────────────────────────────────────── #
+
+@app.post("/nl_command/preview", response_model=NLCommandPreviewResponse)
+def nl_command_preview(req: NLCommandPreviewRequest):
+    """
+    Translate a natural-language request to a shell command WITHOUT executing it.
+    Returns the translated command for the UI to display before running.
+    """
+    if not req.request.strip():
+        raise HTTPException(status_code=400, detail="request must not be empty.")
+
+    collected: list[dict] = []
+    nl_tool = agent._registry.get_or_none("nl_command")
+    if nl_tool is None:
+        return NLCommandPreviewResponse(success=False, error="nl_command tool not registered.")
+
+    result = nl_tool.execute(
+        request=req.request.strip(),
+        preview_only=True,
+        working_dir=req.working_dir or "",
+        event_callback=collected.append,
+    )
+
+    if result.success:
+        # Extract just the command string from output like "Command (not executed): dir /s *.py"
+        cmd = str(result.output or "").replace("Command (not executed): ", "").strip()
+        return NLCommandPreviewResponse(success=True, command=cmd)
+
+    return NLCommandPreviewResponse(success=False, error=result.error)
+
+
+@app.post("/nl_command/run", response_model=ExecuteResponse)
+def nl_command_run(req: NLCommandRunRequest):
+    """
+    Translate a natural-language request and execute the resulting command.
+    Returns full event stream + output.
+    """
+    if not req.request.strip():
+        raise HTTPException(status_code=400, detail="request must not be empty.")
+
+    instruction = req.request.strip()
+    # Route through the normal agent so events are collected properly
+    output, error, events, success = _run_instruction(
+        f"Run a command that: {instruction}"
+    )
+    return ExecuteResponse(success=success, output=output, error=error, events=events)
+
+
 # ── Approval gate routes ─────────────────────────────────────────────────── #
 
 @app.post("/approve")
 def approve(req: ApprovalRequest = ApprovalRequest()):
-    """Signal the approval gate to proceed."""
     _approval_gate.approve(req.reason or "User approved via UI")
     return {"status": "approved"}
 
 
 @app.post("/reject")
 def reject(req: ApprovalRequest = ApprovalRequest()):
-    """Signal the approval gate to cancel the pending plan/step."""
     _approval_gate.reject(req.reason or "User rejected via UI")
     return {"status": "rejected"}
 
 
 @app.get("/gate", response_model=GateStatusResponse)
 def gate_status():
-    """Poll whether the gate is waiting for a decision."""
-    return GateStatusResponse(
-        pending=_approval_gate.is_pending,
-    )
+    return GateStatusResponse(pending=_approval_gate.is_pending)
 
 
 # ── Voice routes ─────────────────────────────────────────────────────────── #
@@ -300,10 +358,7 @@ def voice_transcribe(req: VoiceListenRequest = VoiceListenRequest()):
     try:
         from voice_input import transcribe_from_mic
     except ImportError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Voice module unavailable: {exc}.",
-        )
+        raise HTTPException(status_code=503, detail=f"Voice module unavailable: {exc}.")
     try:
         transcript = transcribe_from_mic(
             model_size=req.model_size,
@@ -316,8 +371,5 @@ def voice_transcribe(req: VoiceListenRequest = VoiceListenRequest()):
         return VoiceTranscribeResponse(success=False, error=f"Transcription error: {exc}")
 
     if not transcript:
-        return VoiceTranscribeResponse(
-            success=False,
-            error="No speech detected.",
-        )
+        return VoiceTranscribeResponse(success=False, error="No speech detected.")
     return VoiceTranscribeResponse(success=True, transcript=transcript)

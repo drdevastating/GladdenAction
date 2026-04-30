@@ -5,6 +5,7 @@ const VOICE_TRANSCRIBE_URL = 'http://localhost:8000/voice/transcribe';
 const VOICE_CHECK_URL      = 'http://localhost:8000/voice/check';
 const APPROVE_URL          = 'http://localhost:8000/approve';
 const REJECT_URL           = 'http://localhost:8000/reject';
+const NL_PREVIEW_URL       = 'http://localhost:8000/nl_command/preview';  // NEW
 
 /* ── DOM refs ───────────────────────────────────────────────────────────── */
 const app        = document.getElementById('app');
@@ -203,17 +204,13 @@ function showApprovalBanner(event) {
   document.getElementById('approve-btn').addEventListener('click', () => sendApprove());
   document.getElementById('reject-btn').addEventListener('click', () => sendReject());
 
-  // Countdown timer
   let remaining = delay;
   approvalTimer = setInterval(() => {
     remaining--;
     if (approvalCountdownEl) approvalCountdownEl.textContent = remaining + 's';
-    if (remaining <= 0) {
-      clearApprovalBanner();
-    }
+    if (remaining <= 0) clearApprovalBanner();
   }, 1000);
 
-  // Trigger progress bar animation
   requestAnimationFrame(() => {
     const bar = document.getElementById('approval-progress');
     if (bar) bar.classList.add('running');
@@ -243,6 +240,42 @@ async function sendReject() {
     await fetch(REJECT_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
   } catch (_) {}
   appendLogEntry({ type: 'error', stage: 'plan_rejected', message: 'Plan cancelled by user.', className: 'result-err' });
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   COMMAND PILL  (NEW — nl_command translated command display)
+   ═════════════════════════════════════════════════════════════════════════ */
+
+function appendCommandPill(ev) {
+  const msg = ev.message || '';
+  // The stage message is "Translated command: <cmd>"
+  const cmd = msg.replace(/^Translated command:\s*/i, '').trim();
+  if (!cmd) return;
+
+  const pill = document.createElement('div');
+  pill.className = 'command-pill';
+  pill.innerHTML =
+    '<div class="command-pill-label">' +
+      '<span class="command-pill-icon">💻</span> Translated Command' +
+    '</div>' +
+    '<div class="command-pill-code">' + escapeHtml(cmd) + '</div>' +
+    '<div class="command-pill-actions">' +
+      '<button class="command-pill-copy" title="Copy to clipboard">Copy</button>' +
+    '</div>';
+
+  pill.querySelector('.command-pill-copy').addEventListener('click', () => {
+    navigator.clipboard.writeText(cmd).then(() => {
+      const btn = pill.querySelector('.command-pill-copy');
+      btn.textContent = 'Copied ✓';
+      btn.classList.add('copied');
+      setTimeout(() => {
+        if (btn) { btn.textContent = 'Copy'; btn.classList.remove('copied'); }
+      }, 1800);
+    });
+  });
+
+  logInner.appendChild(pill);
+  scrollLogToBottom();
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -398,7 +431,7 @@ async function executeInstruction(instruction) {
 async function streamEvents(events) {
   const delay = events.length > 40 ? 10 : events.length > 20 ? 20 : 35;
   for (const ev of events) {
-    // Approval events get special treatment
+    // Approval events
     if (ev.type === 'approval_required') {
       showApprovalBanner(ev);
       await sleep(200);
@@ -414,12 +447,19 @@ async function streamEvents(events) {
       await sleep(200);
       continue;
     }
-    // Terminal output lines — use monospace styling
+    // Terminal output lines
     if (ev.stage === 'stdout_line' || ev.stage === 'stderr_line') {
       appendTerminalLine(ev);
-      await sleep(8);   // fast scroll for terminal output
+      await sleep(8);
       continue;
     }
+    // ── NEW: NL command pill ─────────────────────────────────────────
+    if (ev.stage === 'command_ready') {
+      appendCommandPill(ev);
+      await sleep(delay);
+      continue;
+    }
+    // Default
     appendLogEntry({
       type:    ev.type    || 'info',
       stage:   ev.stage   || '',

@@ -1,31 +1,8 @@
 """
-agent/agent.py  (updated — autonomous mode integration + fixes)
+agent/agent.py  (updated — nl_command tool integration)
 
-The Agent is the reasoning layer of the system. It sits above the Executor
-and is the only layer that communicates with the LLM.
-
-Responsibilities
-----------------
-- Build a structured prompt that exposes available tools to the model.
-- Bias the LLM toward the ui_automation tool when the user instruction
-  implies visible, on-screen execution.
-- PRE-PASS: When the instruction implies composing content (WhatsApp message,
-  email body, file content, Notepad text, VS Code file), call the LLM first
-  to generate that content from the user's intent description, then inject
-  the generated content into the instruction before the tool-dispatch call.
-- Send the (enriched) instruction to Llama 3.3 via the Groq API.
-- Safely parse the model's JSON response.
-- Delegate execution to ToolExecutor and return the result.
-- Never execute tools directly — always goes through the Executor.
-
-NEW — Autonomous Mode
----------------------
-If the instruction begins with the prefix "AUTO:" or "auto:", the Agent
-delegates to AutonomousController instead of the standard single-step flow.
-
-Backward compatibility
-----------------------
-All existing commands continue to work exactly as before.
+Added RULE 4: Natural Language → Shell Command routing via the nl_command tool.
+All other behaviour is unchanged.
 """
 
 from __future__ import annotations
@@ -108,6 +85,32 @@ RULE 3 — DIRECT API TOOLS (fallback only):
 Use "file_creation" only when the user explicitly asks for a direct/silent file
 operation with no mention of a visible app.
 
+RULE 4 — NATURAL LANGUAGE → SHELL COMMANDS (nl_command tool):
+Select "nl_command" when the user's message matches ANY of these patterns:
+  - "how do I [verb] [thing] in terminal / cmd / powershell / command line"
+  - "give me the command to …"
+  - "what command …" / "what's the command for …"
+  - "run a command that …"
+  - "find files that …" / "find all [files/folders] …" in a file-search context
+  - "check what process is on port …" / "which process is using port …"
+  - "show me disk usage / memory usage / network stats" via a command
+  - "compress / zip / archive [folder/files]"
+  - "kill the process on port …" / "terminate process …" via command
+  - "list all [running processes / open ports / env vars / services]" via a command
+  - "count [lines/files/words] …"
+  - "I always forget the command for …"
+  - "I don't remember how to … in terminal"
+  - "convert / translate [description] to a command"
+  - "what is the [git/npm/pip/docker] command to …"
+  - System monitoring, file searching, or network diagnostics via CLI
+
+RULE 4 ARGUMENT MAPPING for nl_command:
+  "request"      → the full natural-language description (required)
+  "execute"      → true by default; false/preview_only=true when user says
+                   "just show me", "what would the command be", "don't run", "preview"
+  "preview_only" → true when user says "just show the command", "don't execute"
+  "working_dir"  → fill if user specifies a folder context
+
 == RESPONSE FORMAT ==
 
 Respond ONLY with a single valid JSON object. No explanation, no markdown, no code fences.
@@ -130,44 +133,47 @@ Response: {"tool": "ui_automation", "arguments": {"workflow": "send_email_browse
 User: "Send a WhatsApp message to Alice asking about her weekend"
 Response: {"tool": "ui_automation", "arguments": {"workflow": "send_whatsapp_desktop", "contact_name": "Alice", "message": "Hey Alice! Hope you had a great weekend. How did it go?"}}
 
-User: "Send WhatsApp messages to Alice and Bob saying Happy Birthday"
-Response: {"tool": "ui_automation", "arguments": {"workflow": "send_whatsapp_advanced", "contact_name": ["Alice", "Bob"], "message": "Happy Birthday! 🎉", "repeat": 1}}
-
 User: "Play a YouTube video about system design interviews"
 Response: {"tool": "ui_automation", "arguments": {"workflow": "play_youtube_video", "query": "system design interviews"}}
-
-User: "Open Elon Musk's LinkedIn profile"
-Response: {"tool": "ui_automation", "arguments": {"workflow": "linkedin_action", "name": "Elon Musk", "action": "open"}}
-
-User: "Search for Sundar Pichai on LinkedIn"
-Response: {"tool": "ui_automation", "arguments": {"workflow": "linkedin_action", "name": "Sundar Pichai", "action": "search"}}
-
-User: "Accept all my LinkedIn connection requests"
-Response: {"tool": "ui_automation", "arguments": {"workflow": "accept_linkedin_connections"}}
-
-User: "Open LinkedIn and accept all pending connection requests"
-Response: {"tool": "ui_automation", "arguments": {"workflow": "accept_linkedin_connections"}}
-
-User: "Accept pending LinkedIn invitations"
-Response: {"tool": "ui_automation", "arguments": {"workflow": "accept_linkedin_connections"}}
-
-User: "Create and run a C++ program that prints Fibonacci numbers"
-Response: {"tool": "ui_automation", "arguments": {"workflow": "code_workflow_cpp", "filename": "fibonacci.cpp", "code": "#include <iostream>\\nint main() {\\n    int a=0,b=1;\\n    for(int i=0;i<10;i++){std::cout<<a<<' ';int c=a+b;a=b;b=c;}\\n    return 0;\\n}"}}
 
 User: "Open Chrome"
 Response: {"tool": "ui_automation", "arguments": {"workflow": "launch_application", "app_name": "chrome"}}
 
-User: "Open the calculator"
-Response: {"tool": "ui_automation", "arguments": {"workflow": "launch_application", "app_name": "calculator"}}
-
 User: "Take a screenshot"
 Response: {"tool": "ui_automation", "arguments": {"workflow": "take_screenshot"}}
 
-User: "Take a screenshot and save it as desktop_capture.png"
-Response: {"tool": "ui_automation", "arguments": {"workflow": "take_screenshot", "screenshot_filename": "desktop_capture.png"}}
-
 User: "Create a file called notes.txt with the content buy milk"
 Response: {"tool": "file_creation", "arguments": {"filename": "notes.txt", "content": "buy milk"}}
+
+User: "I always forget how to find which process is using port 8080"
+Response: {"tool": "nl_command", "arguments": {"request": "find which process is using port 8080", "execute": true}}
+
+User: "Give me the command to list all python files recursively"
+Response: {"tool": "nl_command", "arguments": {"request": "list all python files recursively", "preview_only": true}}
+
+User: "What's the command to compress the dist folder into a zip?"
+Response: {"tool": "nl_command", "arguments": {"request": "compress the dist folder into a zip", "preview_only": true}}
+
+User: "Run a command to show top 10 largest files in the current directory"
+Response: {"tool": "nl_command", "arguments": {"request": "show top 10 largest files in current directory", "execute": true}}
+
+User: "How do I check disk usage on Windows?"
+Response: {"tool": "nl_command", "arguments": {"request": "check disk usage on Windows", "preview_only": true}}
+
+User: "What git command undoes the last commit without losing my changes?"
+Response: {"tool": "nl_command", "arguments": {"request": "undo the last git commit without losing changes", "preview_only": true}}
+
+User: "What command shows all environment variables?"
+Response: {"tool": "nl_command", "arguments": {"request": "show all environment variables", "execute": true}}
+
+User: "Check what's listening on port 3000"
+Response: {"tool": "nl_command", "arguments": {"request": "check what process is listening on port 3000", "execute": true}}
+
+User: "Show me top 5 processes by RAM usage"
+Response: {"tool": "system_control", "arguments": {"domain": "process", "action": "list", "options": {"sort_by": "memory", "limit": 5}}}
+
+User: "What is my CPU usage?"
+Response: {"tool": "system_control", "arguments": {"domain": "system", "action": "cpu_usage"}}
 """
 
 _USER_PROMPT_TEMPLATE = """\
@@ -418,7 +424,7 @@ class Agent:
 
         json_str = _extract_json(raw_text)
         try:
-            decision: dict[str, Any] = json.loads(json_str)
+            decision: dict = json.loads(json_str)
         except json.JSONDecodeError as exc:
             msg = (
                 f"Model returned invalid JSON: {exc}\n"
@@ -480,8 +486,8 @@ class Agent:
         *,
         instruction: str,
         tool_name: str,
-        arguments: dict[str, Any],
-    ) -> dict[str, Any]:
+        arguments: dict,
+    ) -> dict:
         if not _needs_content_generation(instruction):
             logger.debug("Content-gen pre-pass skipped — instruction appears verbatim.")
             return arguments
