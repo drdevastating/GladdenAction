@@ -4,34 +4,6 @@ agent/planner.py
 The Planner sits between the Agent and the Executor.
 It receives a user instruction and returns a structured multi-step
 execution plan using the same Groq / Llama 3.3 backend.
-
-Responsibilities
-----------------
-- Decide whether an instruction requires multiple steps.
-- Decompose complex instructions into an ordered list of tool calls.
-- Return a strict JSON plan that the Agent can iterate over.
-- Fall back gracefully (return None) so the Agent can use its existing
-  single-step path without any change to the Executor, Registry or tools.
-
-Plan format (always validated before returning)
------------------------------------------------
-{
-    "steps": [
-        {
-            "tool":      "<tool_name>",
-            "arguments": { ... }
-        },
-        ...
-    ]
-}
-
-Rules enforced by the prompt
------------------------------
-- Only tools registered in the system may be used.
-- Every workflow / domain / action value must be valid.
-- Each step must be self-contained (no cross-step variable references).
-- Single-step instructions must still return a one-step plan so the
-  Agent can use a uniform execution loop.
 """
 
 from __future__ import annotations
@@ -67,29 +39,31 @@ AVAILABLE TOOLS & VALID VALUES
 Use for anything that involves visible on-screen interaction.
 
   workflow values (use EXACTLY these strings):
-    create_file_notepad      → write a file via Notepad
-    create_file_vscode       → write/open code in VS Code
-    send_email_browser       → send e-mail via Gmail in Chrome
-    send_whatsapp_desktop    → single WhatsApp message
-    send_whatsapp_advanced   → multiple contacts / repeat / delay
-    play_youtube_video       → search & play a YouTube video
-    linkedin_action          → search/open/connect on LinkedIn
-    code_workflow_cpp        → create + compile + run a C++ file
-    launch_application       → open a named application
-    take_screenshot          → capture screen as PNG
+    create_file_notepad           → write a file via Notepad (always fresh new file)
+    create_file_vscode            → write/open code in VS Code
+    send_email_browser            → send e-mail via Gmail in Chrome
+    send_whatsapp_desktop         → single WhatsApp message
+    send_whatsapp_advanced        → multiple contacts / repeat / delay
+    play_youtube_video            → search & play first YouTube video result
+    linkedin_action               → search or open a LinkedIn profile (search | open ONLY)
+    accept_linkedin_connections   → open LinkedIn invitation manager, accept ALL pending requests
+    code_workflow_cpp             → create + compile + run a C++ file
+    launch_application            → open a named application
+    take_screenshot               → capture screen as PNG, save to Desktop
 
   argument keys per workflow:
-    create_file_notepad   : filename (str), content (str)
-    create_file_vscode    : filename (str), content (str)
-    send_email_browser    : recipient (str), subject (str), content (str)
-    send_whatsapp_desktop : contact_name (str), message (str)
-    send_whatsapp_advanced: contact_name (str|list), message (str),
-                            delay_seconds (float), repeat (int)
-    play_youtube_video    : query (str)
-    linkedin_action       : name (str), action ("search"|"open"|"connect")
-    code_workflow_cpp     : filename (str), code (str)
-    launch_application    : app_name (str)
-    take_screenshot       : screenshot_filename (str, optional)
+    create_file_notepad          : filename (str), content (str)
+    create_file_vscode           : filename (str), content (str)
+    send_email_browser           : recipient (str), subject (str), content (str)
+    send_whatsapp_desktop        : contact_name (str), message (str)
+    send_whatsapp_advanced       : contact_name (str|list), message (str),
+                                   delay_seconds (float), repeat (int)
+    play_youtube_video           : query (str)
+    linkedin_action              : name (str), action ("search"|"open")
+    accept_linkedin_connections  : (no arguments needed)
+    code_workflow_cpp            : filename (str), code (str)
+    launch_application           : app_name (str)
+    take_screenshot              : screenshot_filename (str, optional)
 
 ── TOOL 2: system_control ─────────────────────────────────────────
 Use for process management, system metrics and filesystem operations.
@@ -120,6 +94,8 @@ PLANNING RULES
 6. For ui_automation steps, always include the "workflow" key in arguments.
 7. For system_control steps, always include "domain" and "action" keys.
 8. Return ONLY the JSON object — nothing else.
+9. linkedin_action only supports action "search" or "open" — never "connect".
+10. To accept LinkedIn connection requests use accept_linkedin_connections workflow.
 
 ════════════════════════════════════════════════════════════════════
 OUTPUT FORMAT (strict)
@@ -207,6 +183,32 @@ Instruction: "Create a C++ hello world program and run it"
   ]
 }
 
+Instruction: "Accept all my pending LinkedIn connection requests"
+{
+  "steps": [
+    {
+      "tool": "ui_automation",
+      "arguments": {
+        "workflow": "accept_linkedin_connections"
+      }
+    }
+  ]
+}
+
+Instruction: "Open John Smith's LinkedIn profile"
+{
+  "steps": [
+    {
+      "tool": "ui_automation",
+      "arguments": {
+        "workflow": "linkedin_action",
+        "name": "John Smith",
+        "action": "open"
+      }
+    }
+  ]
+}
+
 Instruction: "List the top 5 RAM-consuming processes, then kill notepad.exe"
 {
   "steps": [
@@ -241,11 +243,12 @@ _VALID_TOOLS = {"ui_automation", "system_control", "file_creation"}
 _VALID_UI_WORKFLOWS = {
     "create_file_notepad", "create_file_vscode", "send_email_browser",
     "send_whatsapp_desktop", "send_whatsapp_advanced", "play_youtube_video",
-    "linkedin_action", "code_workflow_cpp", "launch_application", "take_screenshot",
+    "linkedin_action", "accept_linkedin_connections",
+    "code_workflow_cpp", "launch_application", "take_screenshot",
 }
 
-_VALID_SC_DOMAINS  = {"process", "system", "filesystem"}
-_VALID_SC_ACTIONS  = {
+_VALID_SC_DOMAINS = {"process", "system", "filesystem"}
+_VALID_SC_ACTIONS = {
     "list", "inspect", "kill",
     "cpu_usage", "memory_usage", "disk_usage", "uptime",
     "list_directory", "file_info", "create_directory", "rename_file", "delete_file",
@@ -257,7 +260,6 @@ def _utc_now() -> str:
 
 
 def _extract_json(text: str) -> str:
-    """Pull the first {...} block from model output."""
     fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if fenced:
         return fenced.group(1)
@@ -268,10 +270,6 @@ def _extract_json(text: str) -> str:
 
 
 def _validate_plan(plan: dict) -> list[str]:
-    """
-    Return a list of validation errors.
-    Empty list means the plan is valid.
-    """
     errors: list[str] = []
 
     if not isinstance(plan, dict):
@@ -334,20 +332,7 @@ def _validate_plan(plan: dict) -> list[str]:
 class Planner:
     """
     Converts a natural-language instruction into a validated multi-step plan.
-
-    Usage
-    -----
-    planner = Planner(api_key="gsk_...")
-    plan = planner.create_plan("Open Chrome and take a screenshot")
-    # plan == {
-    #   "steps": [
-    #     {"tool": "ui_automation", "arguments": {"workflow": "launch_application", "app_name": "chrome"}},
-    #     {"tool": "ui_automation", "arguments": {"workflow": "take_screenshot"}},
-    #   ]
-    # }
-
-    Returns None if planning fails after retries, allowing the caller to
-    fall back to the original single-step Agent path.
+    Returns None if planning fails after retries.
     """
 
     def __init__(
@@ -356,22 +341,12 @@ class Planner:
         model_name: str = _DEFAULT_MODEL,
         max_retries: int = 2,
     ) -> None:
-        self._client     = Groq(api_key=api_key)
-        self._model_name = model_name
+        self._client      = Groq(api_key=api_key)
+        self._model_name  = model_name
         self._max_retries = max_retries
         logger.info("Planner initialised — model=%r", model_name)
 
-    # ── Public API ────────────────────────────────────────────────────── #
-
     def create_plan(self, instruction: str) -> dict | None:
-        """
-        Generate and validate an execution plan for *instruction*.
-
-        Returns
-        -------
-        dict
-            A validated plan dict with a 'steps' list, or None on failure.
-        """
         if not instruction.strip():
             logger.warning("Planner received empty instruction — skipping.")
             return None
@@ -398,9 +373,7 @@ class Planner:
                 return plan
 
             last_error = error
-            logger.warning(
-                "Planner attempt %d failed validation: %s", attempt, error
-            )
+            logger.warning("Planner attempt %d failed validation: %s", attempt, error)
 
         logger.error(
             "Planner exhausted %d retries. Last error: %s",
@@ -408,10 +381,7 @@ class Planner:
         )
         return None
 
-    # ── Private helpers ───────────────────────────────────────────────── #
-
     def _call_llm(self, instruction: str) -> str | None:
-        """Call Groq and return raw text, or None on error."""
         try:
             response = self._client.chat.completions.create(
                 model=self._model_name,
@@ -425,17 +395,11 @@ class Planner:
                 max_tokens=1024,
             )
             return (response.choices[0].message.content or "").strip()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:           # noqa: BLE001
             logger.error("Planner LLM call failed: %s", exc)
             return None
 
     def _parse_and_validate(self, raw_text: str) -> tuple[dict | None, str]:
-        """
-        Parse JSON from *raw_text* and validate it.
-
-        Returns (plan_dict, "") on success.
-        Returns (None, error_message) on failure.
-        """
         json_str = _extract_json(raw_text)
 
         try:

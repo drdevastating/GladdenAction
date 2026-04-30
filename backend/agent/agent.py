@@ -1,5 +1,5 @@
 """
-agent/agent.py  (updated — autonomous mode integration)
+agent/agent.py  (updated — autonomous mode integration + fixes)
 
 The Agent is the reasoning layer of the system. It sits above the Executor
 and is the only layer that communicates with the LLM.
@@ -23,16 +23,9 @@ NEW — Autonomous Mode
 If the instruction begins with the prefix "AUTO:" or "auto:", the Agent
 delegates to AutonomousController instead of the standard single-step flow.
 
-Example:
-    "AUTO: open YouTube and play a system design interview video"
-
-The AutonomousController runs an iterative observe→plan→act loop using the
-same ToolExecutor and ToolRegistry already wired into the Agent.
-
 Backward compatibility
 ----------------------
-All existing commands continue to work exactly as before.  The "AUTO:"
-prefix is the only new surface area added to Agent.run().
+All existing commands continue to work exactly as before.
 """
 
 from __future__ import annotations
@@ -52,7 +45,6 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MODEL = "llama-3.3-70b-versatile"
 
-# Prefix that activates autonomous mode (case-insensitive)
 _AUTO_PREFIX = "auto:"
 
 # --------------------------------------------------------------------------- #
@@ -79,7 +71,7 @@ the "ui_automation" tool:
   - "open", "launch", "type into", "using notepad", "in VS Code", "send email"
   - WhatsApp, messaging, sending a message to a contact
   - YouTube, play video, watch video, search video
-  - LinkedIn, profile, connection request, connect with someone
+  - LinkedIn, profile, connection request, accept connections, pending invitations
   - C++, compile, run program, g++, executable
   - Screenshot, capture screen, take a screenshot
   - Opening apps/applications by name
@@ -99,17 +91,18 @@ When you select "ui_automation", pick the correct "workflow" value:
     "send_whatsapp_advanced"  → send to multiple contacts, repeat messages, or use delay
 
   YouTube:
-    "play_youtube_video"      → search YouTube and play a video (query required)
+    "play_youtube_video"      → search YouTube and play the first video result (query required)
 
   LinkedIn:
-    "linkedin_action"         → search/open a LinkedIn profile; optionally connect
+    "linkedin_action"               → search or open a LinkedIn profile (action: "search" or "open" ONLY)
+    "accept_linkedin_connections"   → open LinkedIn invitation manager and accept ALL pending connection requests (no extra args needed)
 
   Code:
     "code_workflow_cpp"       → create a C++ file, compile with g++, run it
 
   System:
     "launch_application"      → open a named application (chrome, vscode, calculator, etc.)
-    "take_screenshot"         → capture the screen and save as PNG
+    "take_screenshot"         → capture the screen and save as PNG to Desktop
 
 RULE 3 — DIRECT API TOOLS (fallback only):
 Use "file_creation" only when the user explicitly asks for a direct/silent file
@@ -146,8 +139,17 @@ Response: {"tool": "ui_automation", "arguments": {"workflow": "play_youtube_vide
 User: "Open Elon Musk's LinkedIn profile"
 Response: {"tool": "ui_automation", "arguments": {"workflow": "linkedin_action", "name": "Elon Musk", "action": "open"}}
 
-User: "Send a connection request to Sundar Pichai on LinkedIn"
-Response: {"tool": "ui_automation", "arguments": {"workflow": "linkedin_action", "name": "Sundar Pichai", "action": "connect"}}
+User: "Search for Sundar Pichai on LinkedIn"
+Response: {"tool": "ui_automation", "arguments": {"workflow": "linkedin_action", "name": "Sundar Pichai", "action": "search"}}
+
+User: "Accept all my LinkedIn connection requests"
+Response: {"tool": "ui_automation", "arguments": {"workflow": "accept_linkedin_connections"}}
+
+User: "Open LinkedIn and accept all pending connection requests"
+Response: {"tool": "ui_automation", "arguments": {"workflow": "accept_linkedin_connections"}}
+
+User: "Accept pending LinkedIn invitations"
+Response: {"tool": "ui_automation", "arguments": {"workflow": "accept_linkedin_connections"}}
 
 User: "Create and run a C++ program that prints Fibonacci numbers"
 Response: {"tool": "ui_automation", "arguments": {"workflow": "code_workflow_cpp", "filename": "fibonacci.cpp", "code": "#include <iostream>\\nint main() {\\n    int a=0,b=1;\\n    for(int i=0;i<10;i++){std::cout<<a<<' ';int c=a+b;a=b;b=c;}\\n    return 0;\\n}"}}
@@ -279,14 +281,14 @@ def _build_tool_listing(metadata: list[dict]) -> str:
     for i, tool in enumerate(metadata, start=1):
         lines.append(f"{i}. Tool name: {tool['name']}")
         lines.append(f"   Description: {tool['description']}")
-        props = tool["input_schema"].get("properties", {})
+        props    = tool["input_schema"].get("properties", {})
         required = tool["input_schema"].get("required", [])
         if props:
             lines.append("   Arguments:")
             for arg_name, spec in props.items():
                 req_marker = " (required)" if arg_name in required else " (optional)"
-                arg_type = spec.get("type", "any")
-                arg_desc = spec.get("description", "")
+                arg_type   = spec.get("type", "any")
+                arg_desc   = spec.get("description", "")
                 lines.append(f"     - {arg_name} [{arg_type}]{req_marker}: {arg_desc}")
         lines.append("")
     return "\n".join(lines).rstrip()
@@ -312,11 +314,7 @@ class Agent:
 
     Autonomous mode
     ---------------
-    Prefix the instruction with "AUTO:" to engage the AutonomousController:
-
-        agent.run("AUTO: send WhatsApp message to John saying hello")
-
-    All other instructions follow the existing deterministic flow unchanged.
+    Prefix the instruction with "AUTO:" to engage the AutonomousController.
     """
 
     def __init__(
@@ -328,17 +326,16 @@ class Agent:
         model_name: str = _DEFAULT_MODEL,
         autonomous_max_steps: int = 8,
         autonomous_use_perception: bool = False,
-) -> None:
+    ) -> None:
         self._registry   = registry
         self._executor   = executor
         self._model_name = model_name
-        self._planner = planner
+        self._planner    = planner
         self._client     = Groq(api_key=api_key)
 
-        # ── Lazy-initialise AutonomousController (avoid circular import) ── #
         self._autonomous_max_steps      = autonomous_max_steps
         self._autonomous_use_perception = autonomous_use_perception
-        self._auto_controller           = None   # created on first use
+        self._auto_controller           = None
 
         logger.info(
             "Agent initialised — model=%r  tools=%s",
@@ -352,7 +349,7 @@ class Agent:
 
     def _get_auto_controller(self):
         if self._auto_controller is None:
-            from agent.autonomous_controller import AutonomousController
+            from .autonomous_controller import AutonomousController
             self._auto_controller = AutonomousController(
                 registry       = self._registry,
                 executor       = self._executor,
@@ -369,27 +366,9 @@ class Agent:
     # ------------------------------------------------------------------ #
 
     def run(self, instruction: str, event_callback=None) -> ToolResult:
-        """
-        Run the agent on *instruction*.
-
-        If instruction starts with "AUTO:" → autonomous mode.
-        Otherwise → existing deterministic single-step flow.
-
-        Parameters
-        ----------
-        instruction : str
-        event_callback : callable, optional
-            Called at each execution stage with a structured event dict.
-            Passed through to ToolExecutor and AutonomousController.
-
-        Returns
-        -------
-        ToolResult
-        """
         if not instruction.strip():
             return ToolResult(success=False, error="Instruction must not be empty.")
 
-        # ── Route: autonomous mode ──────────────────────────────────── #
         if instruction.strip().lower().startswith(_AUTO_PREFIX):
             goal = instruction.strip()[len(_AUTO_PREFIX):].strip()
             if not goal:
@@ -403,11 +382,10 @@ class Agent:
                 event_callback=event_callback,
             )
 
-        # ── Route: deterministic single-step flow (unchanged) ─────────── #
         return self._run_deterministic(instruction, event_callback)
 
     # ------------------------------------------------------------------ #
-    #  Deterministic flow (original Agent.run logic — unchanged)          #
+    #  Deterministic flow                                                  #
     # ------------------------------------------------------------------ #
 
     def _run_deterministic(self, instruction: str, event_callback=None) -> ToolResult:
@@ -431,7 +409,7 @@ class Agent:
                 max_tokens=512,
             )
             raw_text: str = response.choices[0].message.content or ""
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:           # noqa: BLE001
             msg = f"Groq API call failed: {exc}"
             logger.error(msg)
             return ToolResult(success=False, error=msg)
@@ -457,7 +435,7 @@ class Agent:
             )
 
         tool_name = decision.get("tool")
-        arguments  = decision.get("arguments", {})
+        arguments = decision.get("arguments", {})
 
         if tool_name is None:
             return ToolResult(
@@ -485,7 +463,6 @@ class Agent:
             arguments=arguments,
         )
 
-        # Pass event_callback through to executor if provided
         if event_callback is not None:
             return self._executor.execute(
                 tool_name,
@@ -495,7 +472,7 @@ class Agent:
         return self._executor.execute(tool_name, **arguments)
 
     # ------------------------------------------------------------------ #
-    #  Content generation pre-pass (unchanged)                            #
+    #  Content generation pre-pass                                        #
     # ------------------------------------------------------------------ #
 
     def _maybe_generate_content(
@@ -551,7 +528,6 @@ class Agent:
 
     def _generate_content(self, instruction: str, medium: str) -> str | None:
         user_prompt = _build_content_gen_prompt(instruction, medium)
-
         try:
             response = self._client.chat.completions.create(
                 model=self._model_name,
@@ -564,7 +540,7 @@ class Agent:
             )
             text = (response.choices[0].message.content or "").strip()
             return text if text else None
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:           # noqa: BLE001
             logger.error("Content-gen LLM call failed: %s", exc)
             return None
 
