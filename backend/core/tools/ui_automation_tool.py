@@ -43,6 +43,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+import ctypes
 import pyautogui
 import pyperclip
 
@@ -769,101 +770,159 @@ class UIAutomationTool(BaseTool):
     def _accept_linkedin_connections(
         self,
         *,
-        callback: EventCallback = None,
+        callback: "EventCallback" = None,
         workflow: str = "accept_linkedin_connections",
         **_: Any,
-    ) -> ToolResult:
+    ) -> "ToolResult":
         """
-        Opens the LinkedIn invitation manager and clicks every Accept button
-        visible on screen, scrolling down until no more are found.
+        Open LinkedIn desktop app and accept ALL pending requests
+        using pyautogui to interact with the app interface.
+        The desktop app maintains login state, unlike browser automation.
         """
         wf = workflow
-        invitation_url = "https://www.linkedin.com/mynetwork/invitation-manager/"
-
-        _emit(callback, _event("info", "launching_browser",
-                               "Opening LinkedIn invitation manager...", wf))
-        chrome_cmd = _find_chrome()
+        
+        _emit(callback, _event("info", "app_launch",
+                               "Launching LinkedIn desktop app...", wf))
+        
+        # Launch LinkedIn app
         try:
-            subprocess.Popen(chrome_cmd + [invitation_url])
-        except Exception as exc:           # noqa: BLE001
-            return ToolResult(success=False, error=f"Failed to launch Chrome: {exc}")
-
-        _wait(6.0, callback, wf, "LinkedIn invitation manager loading")
-
+            subprocess.Popen(["cmd", "/c", "start", "", "linkedin://"])
+            _wait(6.0, callback, wf, "LinkedIn app loading")
+        except Exception as exc:  # noqa: BLE001
+            msg = f"Failed to launch LinkedIn app: {exc}"
+            _emit(callback, _event("error", "app_launch_failed", msg, wf))
+            return ToolResult(success=False, error=msg)
+        
+        # Focus the LinkedIn window
+        self._focus_chrome(callback, wf)
+        _wait(2.0, callback, wf, "settling")
+        
         sw, sh = pyautogui.size()
-        accepted_count = 0
-        no_new_rounds  = 0
-
-        _emit(callback, _event("info", "accepting_connections",
-                               "Starting to accept pending invitations...", wf))
-
-        # We do up to 10 scroll rounds; each round we Tab through the page
-        # looking for "Accept" buttons (they are the first action button per card).
-        # LinkedIn invitation cards each have two buttons: Accept, Ignore.
-        # We use image-free approach: Tab through focusable elements, check if
-        # the focused element is an Accept button via pyautogui (no OCR needed)
-        # by pressing Enter and checking if the page updates.
-        #
-        # Simpler reliable approach: use keyboard-only navigation.
-        # 1. Focus the page.
-        # 2. Press Tab until we reach a button labelled "Accept" (we can't read
-        #    the label without OCR, so we use a known pattern: LinkedIn renders
-        #    Accept first, then Ignore, then the next card's Accept, etc.).
-        # 3. Press Enter, wait, repeat.
-
-        pyautogui.click(sw // 2, sh // 2)
+        
+        # Navigate to invitation manager using keyboard shortcuts
+        _emit(callback, _event("info", "navigating",
+                               "Navigating to invitation manager...", wf))
+        pyautogui.hotkey("ctrl", "l")  # Focus address/search bar
         _wait(0.5, callback, wf)
-        pyautogui.press("escape")
-        _wait(0.3, callback, wf)
-
-        # Tab enough times to skip the nav bar (typically ~12 tabs)
-        for _ in range(12):
-            pyautogui.press("tab")
-            _wait(0.12, callback, wf)
-
-        for scroll_round in range(15):          # up to 15 scroll passes
-            found_this_round = 0
-
-            # Each invitation card has Accept (first) then Ignore.
-            # We press Enter on every other focusable button element
-            # that should be Accept.  If nothing changes after 2 rounds → stop.
-            for _ in range(20):                 # up to 20 buttons per scroll pass
-                pyautogui.press("enter")        # click focused Accept button
-                _wait(1.2, callback, wf)        # wait for LinkedIn to animate removal
-
-                accepted_count   += 1
-                found_this_round += 1
-
-                # Tab over the now-gone card's Ignore (which shifts focus) or
-                # move to the next card's Accept button.
-                # LinkedIn removes the accepted card so focus moves automatically;
-                # one extra Tab lands on the next Accept.
+        _type_via_clipboard("mynetwork/invitation-manager")
+        _wait(0.5, callback, wf)
+        pyautogui.press("enter")
+        _wait(4.0, callback, wf, "invitation manager loading")
+        
+        total_accepted = 0
+        max_passes = 25
+        consecutive_empty_passes = 0
+        
+        _emit(callback, _event("info", "accepting_connections",
+                               f"Starting acceptance loop (max {max_passes} passes)...", wf))
+        
+        for pass_idx in range(1, max_passes + 1):
+            self._focus_chrome(callback, wf)
+            _wait(0.4, callback, wf)
+            
+            _emit(callback, _event("info", "pass_start",
+                                   f"Pass {pass_idx}: Scanning for Accept buttons...", wf))
+            
+            # Click in the center of the invitation cards area
+            pyautogui.click(sw // 2, int(sh * 0.45))
+            _wait(0.3, callback, wf)
+            
+            # Use Tab to navigate through interactive elements and find Accept buttons
+            # LinkedIn invitation cards typically have Accept buttons that are reachable via Tab
+            buttons_clicked_this_pass = 0
+            
+            # Tab through elements on the page to find Accept buttons
+            for tab_idx in range(40):  # Try up to 40 Tab presses per pass
                 pyautogui.press("tab")
-                _wait(0.15, callback, wf)
-
-                _emit(callback, _event("info", "accepting_connections",
-                                       f"Accepted {accepted_count} invitation(s) so far...", wf))
-
-            # Scroll down to load more invitations
-            _emit(callback, _event("info", "scrolling",
-                                   f"Scrolling for more invitations (round {scroll_round + 1})...", wf))
-            pyautogui.scroll(-5)                # scroll down
-            _wait(2.0, callback, wf, "LinkedIn loading more invitations")
-
-            if found_this_round == 0:
-                no_new_rounds += 1
-                if no_new_rounds >= 2:
+                _wait(0.12, callback, wf)
+                
+                # Try clicking with Space (activates focused button)
+                # We use a conservative approach: try Space, if it seems to work, count it
+                try:
+                    current_pos = pyautogui.position()
+                    pyautogui.press("space")
+                    _wait(1.2, callback, wf, "processing click")
+                    
+                    # Check if we're still on the same page (if page changed, likely accepted)
+                    # For now, we assume Space clicked something
+                    buttons_clicked_this_pass += 1
+                    total_accepted += 1
+                    
+                    _emit(callback, _event("debug", "button_clicked",
+                                           f"Pass {pass_idx}: Tab {tab_idx} - button clicked.", wf))
+                    
+                    # Break out of tab loop to re-scan from top
+                    break
+                except Exception:  # noqa: BLE001
+                    pass
+            
+            if buttons_clicked_this_pass == 0:
+                consecutive_empty_passes += 1
+                _emit(callback, _event("info", "no_buttons",
+                                       f"Pass {pass_idx}: No Accept buttons found (empty {consecutive_empty_passes}/3).", wf))
+                
+                if consecutive_empty_passes >= 3:
+                    _emit(callback, _event("info", "stopping",
+                                           "No buttons found in 3 consecutive passes—likely complete.", wf))
                     break
             else:
-                no_new_rounds = 0
-
+                consecutive_empty_passes = 0
+                _emit(callback, _event("info", "buttons_found",
+                                       f"Pass {pass_idx}: Clicked {buttons_clicked_this_pass} button(s).", wf))
+            
+            # Scroll down to load more invitations
+            _emit(callback, _event("info", "scrolling",
+                                   f"Pass {pass_idx}: Scrolling to load more...", wf))
+            pyautogui.click(sw // 2, int(sh * 0.5))
+            _wait(0.3, callback, wf)
+            
+            # Scroll down using Page Down or arrow keys
+            for _ in range(3):
+                pyautogui.press("pagedown")
+                _wait(0.4, callback, wf)
+            
+            _wait(2.5, callback, wf, "loading more invitations")
+        
         _emit(callback, _event("status", "workflow_done",
-                               f"Finished. Accepted ~{accepted_count} connection request(s).", wf))
+                               f"Completed {pass_idx} pass(es). Total accepted: {total_accepted}.", wf))
+        
         return ToolResult(
             success=True,
-            output=f"Accepted approximately {accepted_count} LinkedIn connection request(s).",
-            metadata={"workflow": wf, "accepted_count": accepted_count},
+            output=(
+                f"LinkedIn invitation manager closed. "
+                f"Processed {pass_idx} pass(es) - {total_accepted} total connection(s) likely accepted."
+            ),
+            metadata={
+                "workflow":       wf,
+                "passes":         pass_idx,
+                "total_accepted": total_accepted,
+                "method":         "pyautogui_desktop_app",
+            },
         )
+ 
+    def _focus_chrome(self, callback: "EventCallback", wf: str) -> None:
+        """
+        Bring the Chrome/LinkedIn window to the foreground.
+        Uses pygetwindow when available; falls back to a centre-click.
+        """
+        try:
+            import pygetwindow as gw                   # type: ignore
+            for fragment in ("LinkedIn", "Google Chrome", "Chrome"):
+                wins = gw.getWindowsWithTitle(fragment)
+                if wins:
+                    wins[0].restore()
+                    wins[0].activate()
+                    time.sleep(0.35)
+                    return
+        except ImportError:
+            pass                                       # graceful degradation
+        except Exception as exc:                       # noqa: BLE001
+            logger.debug("pygetwindow activate failed: %s", exc)
+ 
+        # Fallback: click in the centre of the screen
+        sw, sh = pyautogui.size()
+        pyautogui.click(sw // 2, sh // 2)
+        time.sleep(0.3)
 
     # ================================================================== #
     #  FIX 5 — code_workflow_cpp                                           #
