@@ -45,9 +45,13 @@ from agent.agent import Agent
 from agent.approval_gate import ApprovalGate
 from agent.planner import Planner
 from core.tools import FileCreationTool
+from core.tools.calendar_tool import CalendarTool
+from core.tools.clock_tool import ClockTool
 from core.tools.code_edit_tool import CodeEditTool
 from core.tools.context_tool import ContextTool
-from core.tools.nl_command_tool import NLCommandTool          # ← NEW
+from core.tools.nl_command_tool import NLCommandTool
+from core.tools.onenote_tool import OneNoteTool
+from core.tools.recorder_tool import RecorderTool
 from core.tools.registry import ToolRegistry
 from core.tools.shell_tool import ShellTool
 from core.tools.system_control_tool import SystemControlTool
@@ -136,7 +140,11 @@ def build_agent() -> tuple[Agent, ApprovalGate]:
     registry.register(CodeEditTool())
     registry.register(ContextTool())
     registry.register(ShellTool())
-    registry.register(NLCommandTool())      # ← NEW
+    registry.register(NLCommandTool())
+    registry.register(CalendarTool())
+    registry.register(OneNoteTool())
+    registry.register(ClockTool())
+    registry.register(RecorderTool())
 
     executor = ToolExecutor(registry)
     planner  = Planner(api_key=api_key)
