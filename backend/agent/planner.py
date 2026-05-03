@@ -42,6 +42,7 @@ Use for anything that involves visible on-screen interaction.
     create_file_notepad           → write a file via Notepad (always fresh new file)
     create_file_vscode            → write/open code in VS Code
     send_email_browser            → send e-mail via Gmail in Chrome
+    create_event_browser          → create a Google Calendar event via Chrome browser
     send_whatsapp_desktop         → single WhatsApp message
     send_whatsapp_advanced        → multiple contacts / repeat / delay
     play_youtube_video            → search & play first YouTube video result
@@ -55,6 +56,10 @@ Use for anything that involves visible on-screen interaction.
     create_file_notepad          : filename (str), content (str)
     create_file_vscode           : filename (str), content (str)
     send_email_browser           : recipient (str), subject (str), content (str)
+    create_event_browser         : event_title (str, required),
+                                   event_date (str, YYYY-MM-DD),
+                                   event_start_time (str, HH:MM 24h e.g. "14:00"),
+                                   event_end_time (str, HH:MM 24h e.g. "15:00")
     send_whatsapp_desktop        : contact_name (str), message (str)
     send_whatsapp_advanced       : contact_name (str|list), message (str),
                                    delay_seconds (float), repeat (int)
@@ -209,6 +214,54 @@ Instruction: "Open John Smith's LinkedIn profile"
   ]
 }
 
+Instruction: "Add a Team Sync meeting on 2025-06-15 from 10am to 11am on Google Calendar"
+{
+  "steps": [
+    {
+      "tool": "ui_automation",
+      "arguments": {
+        "workflow": "create_event_browser",
+        "event_title": "Team Sync",
+        "event_date": "2025-06-15",
+        "event_start_time": "10:00",
+        "event_end_time": "11:00"
+      }
+    }
+  ]
+}
+
+Instruction: "Schedule a dentist appointment on July 20th 9am to 9:30am"
+{
+  "steps": [
+    {
+      "tool": "ui_automation",
+      "arguments": {
+        "workflow": "create_event_browser",
+        "event_title": "Dentist Appointment",
+        "event_date": "2025-07-20",
+        "event_start_time": "09:00",
+        "event_end_time": "09:30"
+      }
+    }
+  ]
+}
+
+Instruction: "Create a birthday party event on August 10 2025 from 6pm to 10pm"
+{
+  "steps": [
+    {
+      "tool": "ui_automation",
+      "arguments": {
+        "workflow": "create_event_browser",
+        "event_title": "Birthday Party",
+        "event_date": "2025-08-10",
+        "event_start_time": "18:00",
+        "event_end_time": "22:00"
+      }
+    }
+  ]
+}
+
 Instruction: "List the top 5 RAM-consuming processes, then kill notepad.exe"
 {
   "steps": [
@@ -242,6 +295,7 @@ _VALID_TOOLS = {"ui_automation", "system_control", "file_creation"}
 
 _VALID_UI_WORKFLOWS = {
     "create_file_notepad", "create_file_vscode", "send_email_browser",
+    "create_event_browser",
     "send_whatsapp_desktop", "send_whatsapp_advanced", "play_youtube_video",
     "linkedin_action", "accept_linkedin_connections",
     "code_workflow_cpp", "launch_application", "take_screenshot",

@@ -52,6 +52,7 @@ the "ui_automation" tool:
   - C++, compile, run program, g++, executable
   - Screenshot, capture screen, take a screenshot
   - Opening apps/applications by name
+  - Google Calendar, add event, create event, schedule, calendar, meeting, appointment
 
 RULE 2 — MATCH THE WORKFLOW ARGUMENT:
 When you select "ui_automation", pick the correct "workflow" value:
@@ -62,6 +63,11 @@ When you select "ui_automation", pick the correct "workflow" value:
 
   Email:
     "send_email_browser"      → send email via Gmail in Chrome
+
+  Calendar:
+    "create_event_browser"    → create a Google Calendar event via Chrome browser
+                                (args: event_title required; event_date as YYYY-MM-DD,
+                                 event_start_time as HH:MM 24h, event_end_time as HH:MM 24h)
 
   WhatsApp:
     "send_whatsapp_desktop"   → send a single WhatsApp message to one contact
@@ -129,6 +135,12 @@ Response: {"tool": "ui_automation", "arguments": {"workflow": "create_file_vscod
 
 User: "Send an email to john@example.com saying the meeting is at 3pm"
 Response: {"tool": "ui_automation", "arguments": {"workflow": "send_email_browser", "recipient": "john@example.com", "subject": "Meeting Update", "content": "The meeting is at 3pm."}}
+
+User: "Add a meeting called Team Sync on 2025-06-15 from 10:00 to 11:00"
+Response: {"tool": "ui_automation", "arguments": {"workflow": "create_event_browser", "event_title": "Team Sync", "event_date": "2025-06-15", "event_start_time": "10:00", "event_end_time": "11:00"}}
+
+User: "Schedule a dentist appointment on 2025-07-20 at 9am to 9:30am on Google Calendar"
+Response: {"tool": "ui_automation", "arguments": {"workflow": "create_event_browser", "event_title": "Dentist Appointment", "event_date": "2025-07-20", "event_start_time": "09:00", "event_end_time": "09:30"}}
 
 User: "Send a WhatsApp message to Alice asking about her weekend"
 Response: {"tool": "ui_automation", "arguments": {"workflow": "send_whatsapp_desktop", "contact_name": "Alice", "message": "Hey Alice! Hope you had a great weekend. How did it go?"}}

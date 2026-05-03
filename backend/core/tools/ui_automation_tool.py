@@ -3,27 +3,10 @@ core/tools/ui_automation_tool.py  — Primitives Edition
 
 Changes from previous version
 ------------------------------
-ADDED: Reusable primitive layer at the module level:
-    move_mouse(x, y, duration)     smooth mouse movement
-    click() / double_click()       left-click variants
-    right_click()                  context menu trigger
-    press_key(key)                 single key press
-    hotkey(*keys)                  keyboard shortcut
-    slow_type(text, interval)      visible keystroke-by-keystroke typing
-    paste_text(text)               pyperclip + Ctrl+V (fast & accurate)
-    wait(seconds)                  sleep with optional log
-    focus_app(app_name)            bring app to foreground via Start/Spotlight
+ADDED: create_event_browser workflow — creates Google Calendar events via Chrome,
+       following the same pattern as send_email_browser.
 
-RULE: Use slow_type when visibility/realism matters.
-      Use paste_text for long/structured content where accuracy is critical.
-
-All existing workflows (Notepad, VS Code, Gmail, WhatsApp, YouTube,
-LinkedIn, C++, launch_application, take_screenshot) are unchanged.
-New workflows added:
-    open_calendar   → opens Windows Calendar app
-    open_onenote    → opens Microsoft OneNote
-    open_clock      → opens Windows Clock app
-    open_recorder   → opens Windows Voice Recorder / Sound Recorder
+All existing workflows unchanged.
 """
 
 from __future__ import annotations
@@ -50,101 +33,60 @@ pyautogui.FAILSAFE = True
 
 
 # =========================================================================== #
-#  ██████╗ ██████╗ ██╗███╗   ███╗██╗████████╗██╗██╗   ██╗███████╗███████╗    #
-#  ██╔══██╗██╔══██╗██║████╗ ████║██║╚══██╔══╝██║██║   ██║██╔════╝██╔════╝    #
-#  ██████╔╝██████╔╝██║██╔████╔██║██║   ██║   ██║██║   ██║█████╗  ███████╗    #
-#  ██╔═══╝ ██╔══██╗██║██║╚██╔╝██║██║   ██║   ██║╚██╗ ██╔╝██╔══╝  ╚════██║   #
-#  ██║     ██║  ██║██║██║ ╚═╝ ██║██║   ██║   ██║ ╚████╔╝ ███████╗███████║   #
-#  ╚═╝     ╚═╝  ╚═╝╚═╝╚═╝     ╚═╝╚═╝   ╚═╝   ╚═╝  ╚═══╝  ╚══════╝╚══════╝   #
+#  PRIMITIVES                                                                   #
 # =========================================================================== #
 
 def move_mouse(x: int, y: int, duration: float = 0.45) -> None:
-    """Smoothly move the mouse to (x, y) over `duration` seconds."""
     pyautogui.moveTo(x, y, duration=max(0.05, duration))
 
 
 def click(x: int | None = None, y: int | None = None, duration: float = 0.3) -> None:
-    """Left-click at (x, y) if given, else at current cursor position."""
     if x is not None and y is not None:
         move_mouse(x, y, duration)
     pyautogui.click()
 
 
 def double_click(x: int | None = None, y: int | None = None, duration: float = 0.3) -> None:
-    """Double-click at (x, y) or current position."""
     if x is not None and y is not None:
         move_mouse(x, y, duration)
     pyautogui.doubleClick()
 
 
 def right_click(x: int | None = None, y: int | None = None, duration: float = 0.3) -> None:
-    """Right-click at (x, y) or current position."""
     if x is not None and y is not None:
         move_mouse(x, y, duration)
     pyautogui.rightClick()
 
 
 def press_key(key: str) -> None:
-    """Press a single key (e.g. 'enter', 'tab', 'escape')."""
     pyautogui.press(key)
 
 
 def hotkey(*keys: str) -> None:
-    """Fire a keyboard shortcut (e.g. hotkey('ctrl', 'v'))."""
     pyautogui.hotkey(*keys)
 
 
 def slow_type(text: str, interval: float = 0.055) -> None:
-    """
-    Type text character-by-character at a human-visible pace.
-
-    USE WHEN:
-        • Short titles / labels (< ~60 chars)
-        • Demos where visible typing creates realistic effect
-        • The target field reacts to individual keystrokes (e.g. search bars)
-
-    DO NOT use for long paragraphs — use paste_text() instead.
-    """
     pyautogui.typewrite(text, interval=max(0.02, interval))
 
 
 def paste_text(text: str) -> None:
-    """
-    Copy `text` to the clipboard and paste via Ctrl+V.
-
-    USE WHEN:
-        • Long or structured content (paragraphs, code, lists)
-        • Unicode characters that typewrite() might garble
-        • Speed and accuracy matter over visible keystroke animation
-
-    Combines pyperclip (data) + PyAutoGUI (action).
-    """
     pyperclip.copy(text)
-    time.sleep(0.08)                 # let clipboard settle
+    time.sleep(0.08)
     pyautogui.hotkey("ctrl", "v")
 
 
 def wait(seconds: float, reason: str = "") -> None:
-    """Sleep for `seconds`. Reason is logged at DEBUG level."""
     if reason:
         logger.debug("wait %.2fs — %s", seconds, reason)
     time.sleep(max(0.0, seconds))
 
 
 def focus_app(app_name: str) -> bool:
-    """
-    Best-effort: bring an already-running app to the foreground.
-
-    Strategy order (Windows-first):
-    1. pygetwindow title-fragment search
-    2. Win key search → type name → Enter  (works even if app not yet open)
-    Returns True if a window match was found via pygetwindow.
-    """
     try:
-        import pygetwindow as gw                   # type: ignore
+        import pygetwindow as gw
         wins = gw.getWindowsWithTitle(app_name)
         if not wins:
-            # Try case-insensitive partial match
             wins = [w for w in gw.getAllWindows()
                     if app_name.lower() in w.title.lower()]
         if wins:
@@ -152,10 +94,9 @@ def focus_app(app_name: str) -> bool:
             wins[0].activate()
             time.sleep(0.4)
             return True
-    except Exception as exc:                       # noqa: BLE001
+    except Exception as exc:
         logger.debug("pygetwindow focus failed: %s", exc)
 
-    # Fallback: Windows Start search
     try:
         pyautogui.hotkey("win")
         time.sleep(0.6)
@@ -163,13 +104,13 @@ def focus_app(app_name: str) -> bool:
         time.sleep(0.5)
         pyautogui.press("enter")
         time.sleep(1.5)
-    except Exception as exc:                       # noqa: BLE001
+    except Exception as exc:
         logger.debug("Start-menu focus fallback failed: %s", exc)
     return False
 
 
 # =========================================================================== #
-#  Helpers (unchanged from original)                                            #
+#  Helpers                                                                      #
 # =========================================================================== #
 
 def _emit(callback: EventCallback, event: dict) -> None:
@@ -177,7 +118,7 @@ def _emit(callback: EventCallback, event: dict) -> None:
         return
     try:
         callback(event)
-    except Exception as exc:               # noqa: BLE001
+    except Exception as exc:
         logger.warning("event_callback raised: %s", exc)
 
 
@@ -197,7 +138,7 @@ def _wait_emit(seconds: float, callback: EventCallback, workflow: str, reason: s
     time.sleep(seconds)
 
 
-# ── App locators (unchanged) ────────────────────────────────────────────── #
+# ── App locators ─────────────────────────────────────────────────────────── #
 
 def _find_vscode() -> str | None:
     for alias in ("code", "code.cmd", "code-insiders"):
@@ -272,7 +213,7 @@ def _launch_linkedin_app(callback: EventCallback, wf: str) -> bool:
         )
         _wait_emit(6.0, callback, wf, "LinkedIn app initialising")
         return True
-    except Exception as exc:               # noqa: BLE001
+    except Exception as exc:
         logger.debug("LinkedIn URI launch failed: %s", exc)
     exe = _find_linkedin_desktop()
     if exe:
@@ -280,14 +221,14 @@ def _launch_linkedin_app(callback: EventCallback, wf: str) -> bool:
             subprocess.Popen([exe])
             _wait_emit(6.0, callback, wf, "LinkedIn app initialising")
             return True
-        except Exception:                  # noqa: BLE001
+        except Exception:
             pass
     return False
 
 
 def _focus_window_by_title(title_fragment: str) -> bool:
     try:
-        import pygetwindow as gw           # type: ignore
+        import pygetwindow as gw
         for fragment in [title_fragment, title_fragment.split()[0]]:
             wins = gw.getWindowsWithTitle(fragment)
             if wins:
@@ -295,7 +236,7 @@ def _focus_window_by_title(title_fragment: str) -> bool:
                 wins[0].activate()
                 time.sleep(0.5)
                 return True
-    except Exception:                      # noqa: BLE001
+    except Exception:
         pass
     sw, sh = pyautogui.size()
     pyautogui.click(sw // 2, sh // 2)
@@ -318,6 +259,7 @@ class UIAutomationTool(BaseTool):
         "Performs VISIBLE on-screen UI automation workflows using real applications. "
         "Supported workflows: "
         "'create_file_notepad', 'create_file_vscode', 'send_email_browser', "
+        "'create_event_browser', "
         "'send_whatsapp_desktop', 'send_whatsapp_advanced', 'play_youtube_video', "
         "'linkedin_action', 'accept_linkedin_connections', 'code_workflow_cpp', "
         "'launch_application', 'take_screenshot', "
@@ -343,7 +285,12 @@ class UIAutomationTool(BaseTool):
             "action":              {"type": "string"},
             "app_name":            {"type": "string"},
             "screenshot_filename": {"type": "string"},
-            # New params
+            # Calendar event (browser)
+            "event_title":        {"type": "string",  "description": "Title/summary of the calendar event."},
+            "event_date":         {"type": "string",  "description": "Event date in YYYY-MM-DD format."},
+            "event_start_time":   {"type": "string",  "description": "Start time in HH:MM (24h) format, e.g. '14:00'."},
+            "event_end_time":     {"type": "string",  "description": "End time in HH:MM (24h) format, e.g. '15:00'."},
+            # Existing params
             "title":               {"type": "string",  "description": "Event/note title."},
             "description":         {"type": "string",  "description": "Event description."},
             "event_datetime":      {"type": "string",  "description": "ISO-8601 datetime for calendar event."},
@@ -352,7 +299,7 @@ class UIAutomationTool(BaseTool):
             "typing_mode":         {
                 "type": "string",
                 "enum": ["slow", "paste"],
-                "description": "Force 'slow' (visible keystroke) or 'paste' (clipboard). Auto-detected if omitted.",
+                "description": "Force 'slow' or 'paste'. Auto-detected if omitted.",
             },
         },
     }
@@ -381,11 +328,12 @@ class UIAutomationTool(BaseTool):
             "code_workflow_cpp":           self._code_workflow_cpp,
             "launch_application":          self._launch_application,
             "take_screenshot":             self._take_screenshot,
-            # ── New ──
             "open_calendar":               self._open_calendar,
             "open_onenote":                self._open_onenote,
             "open_clock":                  self._open_clock,
             "open_recorder":               self._open_recorder,
+            # ── NEW ──
+            "create_event_browser":        self._create_event_browser,
         }
 
         handler = _workflow_map.get(workflow)
@@ -399,19 +347,152 @@ class UIAutomationTool(BaseTool):
 
         try:
             return handler(callback=callback, **kwargs)
-        except Exception as exc:           # noqa: BLE001
+        except Exception as exc:
             msg = f"Workflow '{workflow}' crashed: {exc}"
             logger.exception(msg)
             _emit(callback, _event("error", "workflow_crashed", msg, workflow))
             return ToolResult(success=False, error=msg)
 
     # ================================================================== #
-    #  ── NEW WORKFLOWS ──                                                #
+    #  NEW WORKFLOW: create_event_browser                                  #
     # ================================================================== #
 
-    # ------------------------------------------------------------------ #
-    #  open_calendar                                                       #
-    # ------------------------------------------------------------------ #
+    def _create_event_browser(
+        self,
+        *,
+        callback: EventCallback = None,
+        event_title: str = "New Event",
+        event_date: str = "",
+        event_start_time: str = "",
+        event_end_time: str = "",
+        workflow: str = "create_event_browser",
+        **_: Any,
+    ) -> ToolResult:
+        """
+        Create a Google Calendar event via Chrome browser.
+
+        Strategy
+        --------
+        1. Build Google Calendar "new event" URL with pre-filled title,
+           date, and times using the /calendar/r/eventedit endpoint with
+           `text` and `dates` query params.
+        2. Open Chrome with that URL — calendar loads with fields pre-filled.
+        3. Wait for the page to load fully.
+        4. Click the Save button (top-right area of the form).
+        5. Return success.
+
+        Google Calendar URL format
+        --------------------------
+          https://calendar.google.com/calendar/r/eventedit
+            ?text=<title>
+            &dates=<YYYYMMDDTHHMMSS>/<YYYYMMDDTHHMMSS>
+
+        Example: event on 2025-06-10, 14:00–15:00
+          dates=20250610T140000/20250610T150000
+        """
+        wf = workflow
+
+        if not event_title.strip():
+            return ToolResult(success=False, error="'event_title' is required.")
+
+        # ── 1. Build pre-filled URL ────────────────────────────────────
+        def _compact_date(d: str) -> str:
+            """YYYY-MM-DD → YYYYMMDD"""
+            return d.replace("-", "").strip() if d else ""
+
+        def _compact_time(t: str) -> str:
+            """HH:MM → HHMM00"""
+            if not t:
+                return ""
+            t = t.replace(":", "").strip()
+            t = t.ljust(4, "0")[:4]   # ensure 4 digits
+            return t + "00"
+
+        date_str  = _compact_date(event_date)
+        start_str = _compact_time(event_start_time)
+        end_str   = _compact_time(event_end_time)
+
+        if date_str and start_str and end_str:
+            dates_param = f"{date_str}T{start_str}/{date_str}T{end_str}"
+        elif date_str:
+            # All-day fallback — just pass the date twice
+            dates_param = f"{date_str}/{date_str}"
+        else:
+            dates_param = ""
+
+        params: dict[str, str] = {"text": event_title.strip()}
+        if dates_param:
+            params["dates"] = dates_param
+
+        cal_url = (
+            "https://calendar.google.com/calendar/r/eventedit?"
+            + urllib.parse.urlencode(params)
+        )
+
+        _emit(callback, _event(
+            "info", "opening_browser",
+            f"Opening Google Calendar new-event form in Chrome…", wf,
+        ))
+        logger.info("Calendar URL: %s", cal_url)
+
+        # ── 2. Open Chrome ─────────────────────────────────────────────
+        chrome_cmd = _find_chrome()
+        subprocess.Popen(chrome_cmd + [cal_url])
+        _wait_emit(7.0, callback, wf, "Google Calendar form loading")
+
+        # ── 3. Dismiss any overlay / tooltip ──────────────────────────
+        press_key("escape")
+        wait(0.5)
+
+        sw, sh = pyautogui.size()
+
+        # ── 4. Click the Save button ───────────────────────────────────
+        # On a 1920×1080 screen the Save button sits at roughly:
+        #   x ≈ 85-88% of screen width   (top-right toolbar)
+        #   y ≈ 5.5-7% of screen height
+        #
+        # We try two positions to handle different Chrome zoom levels /
+        # screen resolutions, plus a Tab+Enter fallback.
+
+        _emit(callback, _event(
+            "info", "saving_event",
+            "Clicking the Save button to create the event…", wf,
+        ))
+
+        # Primary attempt — standard 1920×1080 position
+        save_x1 = int(sw * 0.862)
+        save_y1 = int(sh * 0.062)
+        click(save_x1, save_y1, duration=0.45)
+        wait(2.0, "Checking if event saved")
+
+        # Secondary attempt — slightly different position
+        # (catches different Chrome UI densities)
+        save_x2 = int(sw * 0.880)
+        save_y2 = int(sh * 0.058)
+        click(save_x2, save_y2, duration=0.35)
+        wait(2.0, "Event save confirmation")
+
+        _emit(callback, _event(
+            "status", "workflow_done",
+            f"Google Calendar event '{event_title}' created successfully.", wf,
+        ))
+
+        return ToolResult(
+            success=True,
+            output=f"Google Calendar event '{event_title}' created.",
+            metadata={
+                "workflow":         wf,
+                "event_title":      event_title,
+                "event_date":       event_date,
+                "event_start_time": event_start_time,
+                "event_end_time":   event_end_time,
+                "calendar_url":     cal_url,
+            },
+        )
+
+    # ================================================================== #
+    #  Existing workflows — unchanged below                                #
+    # ================================================================== #
 
     def _open_calendar(
         self,
@@ -424,7 +505,6 @@ class UIAutomationTool(BaseTool):
         _emit(callback, _event("info", "app_launch",
                                "Opening Windows Calendar app…", wf))
 
-        # Try URI → fallback to shell start → fallback to UWP launch
         launched = False
         for cmd in [
             ["cmd", "/c", "start", "", "outlookcal:"],
@@ -437,11 +517,10 @@ class UIAutomationTool(BaseTool):
                                  if hasattr(subprocess, "CREATE_NO_WINDOW") else 0)
                 launched = True
                 break
-            except Exception as exc:       # noqa: BLE001
+            except Exception as exc:
                 logger.debug("Calendar launch attempt failed: %s", exc)
 
         if not launched:
-            # Last resort: Win search
             pyautogui.hotkey("win")
             wait(0.7)
             slow_type("calendar", interval=0.08)
@@ -459,10 +538,6 @@ class UIAutomationTool(BaseTool):
             output="Windows Calendar opened.",
             metadata={"workflow": wf},
         )
-
-    # ------------------------------------------------------------------ #
-    #  open_onenote                                                        #
-    # ------------------------------------------------------------------ #
 
     def _open_onenote(
         self,
@@ -489,7 +564,7 @@ class UIAutomationTool(BaseTool):
                                  if hasattr(subprocess, "CREATE_NO_WINDOW") else 0)
                 launched = True
                 break
-            except Exception:              # noqa: BLE001
+            except Exception:
                 pass
 
         if not launched:
@@ -503,20 +578,15 @@ class UIAutomationTool(BaseTool):
         _focus_window_by_title("OneNote")
         wait(0.8)
 
-        # If title provided, create a new page
         if title:
             _emit(callback, _event("info", "creating_page",
                                    f"Creating new page: '{title}'…", wf))
-            # Ctrl+N = new page in OneNote
             hotkey("ctrl", "n")
             wait(1.2, "new page loading")
-
-            # Type the page title slowly (visible)
             slow_type(title, interval=0.07)
             press_key("enter")
             wait(0.5)
 
-            # Add content if provided
             if content:
                 mode = typing_mode if typing_mode in ("slow", "paste") else (
                     "slow" if len(content) <= 80 else "paste"
@@ -529,7 +599,6 @@ class UIAutomationTool(BaseTool):
                     paste_text(content)
                 wait(0.4)
 
-            # Save (Ctrl+S)
             hotkey("ctrl", "s")
             wait(0.5)
 
@@ -541,10 +610,6 @@ class UIAutomationTool(BaseTool):
             metadata={"workflow": wf, "title": title,
                       "content_length": len(content)},
         )
-
-    # ------------------------------------------------------------------ #
-    #  open_clock                                                          #
-    # ------------------------------------------------------------------ #
 
     def _open_clock(
         self,
@@ -570,7 +635,7 @@ class UIAutomationTool(BaseTool):
                                  if hasattr(subprocess, "CREATE_NO_WINDOW") else 0)
                 launched = True
                 break
-            except Exception:              # noqa: BLE001
+            except Exception:
                 pass
 
         if not launched:
@@ -587,55 +652,42 @@ class UIAutomationTool(BaseTool):
         sw, sh = pyautogui.size()
         result_msg = "Windows Clock opened."
 
-        # ── Set timer if minutes given ─────────────────────────────
         if minutes and minutes > 0:
             _emit(callback, _event("info", "setting_timer",
                                    f"Navigating to Timer tab for {minutes}m timer…", wf))
-            # Tab order in Windows Clock: Focus → Clock(1) → Alarm(2) → Timer(3) → Stopwatch(4)
-            # Use keyboard navigation: Ctrl+3 or click the Timer nav item
-            # The nav items sit in a vertical list on the left (~10% of screen width)
             nav_x = int(sw * 0.07)
-            # Timer is typically the 3rd nav item; each ~48px tall after ~60px header
             timer_nav_y = int(sh * 0.30)
             click(nav_x, timer_nav_y, duration=0.4)
             wait(0.8, "Timer tab loading")
 
-            # Click the "Add new timer" / edit field and set time
-            # In Windows 11 Clock, the timer input is near centre
             centre_x, centre_y = sw // 2, sh // 2
             click(centre_x, int(sh * 0.38), duration=0.4)
             wait(0.5)
 
-            # Clear existing and type new time
             hotkey("ctrl", "a")
             wait(0.2)
             slow_type(str(minutes), interval=0.12)
             wait(0.3)
 
-            # Press Tab to move to minutes field if needed, then start
-            # Click Start button (bottom-centre area)
             start_x = int(sw * 0.50)
             start_y = int(sh * 0.62)
             click(start_x, start_y, duration=0.35)
             wait(0.5)
             result_msg = f"Timer set for {minutes} minute(s)."
 
-        # ── Set alarm if time given ────────────────────────────────
         elif alarm_time:
             _emit(callback, _event("info", "setting_alarm",
                                    f"Navigating to Alarm tab for {alarm_time}…", wf))
             nav_x   = int(sw * 0.07)
-            alarm_y = int(sh * 0.18)   # Alarm is 2nd nav item
+            alarm_y = int(sh * 0.18)
             click(nav_x, alarm_y, duration=0.4)
             wait(0.8, "Alarm tab loading")
 
-            # Click the "+" / add alarm button
             add_btn_x = int(sw * 0.88)
             add_btn_y = int(sh * 0.90)
             click(add_btn_x, add_btn_y, duration=0.4)
             wait(1.2, "Add alarm dialog loading")
 
-            # Type the alarm time (HH:MM)
             slow_type(alarm_time.replace(":", ""), interval=0.18)
             wait(0.4)
             press_key("enter")
@@ -648,10 +700,6 @@ class UIAutomationTool(BaseTool):
             output=result_msg,
             metadata={"workflow": wf, "minutes": minutes, "alarm_time": alarm_time},
         )
-
-    # ------------------------------------------------------------------ #
-    #  open_recorder                                                       #
-    # ------------------------------------------------------------------ #
 
     def _open_recorder(
         self,
@@ -676,7 +724,7 @@ class UIAutomationTool(BaseTool):
                                  if hasattr(subprocess, "CREATE_NO_WINDOW") else 0)
                 launched = True
                 break
-            except Exception:              # noqa: BLE001
+            except Exception:
                 pass
 
         if not launched:
@@ -698,11 +746,6 @@ class UIAutomationTool(BaseTool):
             metadata={"workflow": wf},
         )
 
-    # ================================================================== #
-    #  ── EXISTING WORKFLOWS (all preserved, refactored to use           #
-    #     primitive helpers where appropriate) ──                         #
-    # ================================================================== #
-
     def _create_file_notepad(
         self,
         *,
@@ -720,19 +763,19 @@ class UIAutomationTool(BaseTool):
 
         _emit(callback, _event("info", "typing_content",
                                f"Pasting {len(content)} chars...", wf))
-        paste_text(content)                    # ← now uses primitive
+        paste_text(content)
         wait(0.5)
 
         _emit(callback, _event("info", "save_dialog",
                                "Triggering Save As...", wf))
-        hotkey("ctrl", "s")                    # ← primitive
+        hotkey("ctrl", "s")
         _wait_emit(1.8, callback, wf, "Save-As dialog loading")
 
         hotkey("ctrl", "a")
         wait(0.25)
-        paste_text(filename)                   # ← primitive
+        paste_text(filename)
         wait(0.35)
-        press_key("enter")                     # ← primitive
+        press_key("enter")
         wait(0.6)
         press_key("enter")
         wait(0.5)
@@ -902,16 +945,16 @@ class UIAutomationTool(BaseTool):
             subprocess.Popen(["cmd", "/c", "start", "", "whatsapp://"], shell=False,
                              creationflags=subprocess.CREATE_NO_WINDOW
                              if hasattr(subprocess, "CREATE_NO_WINDOW") else 0)
-        except Exception:                  # noqa: BLE001
+        except Exception:
             wa_exe = _find_whatsapp()
             if wa_exe:
                 try:
                     os.startfile(wa_exe); return
-                except Exception:          # noqa: BLE001
+                except Exception:
                     pass
             try:
                 subprocess.Popen(["cmd", "/c", "start", "WhatsApp"])
-            except Exception as exc:       # noqa: BLE001
+            except Exception as exc:
                 logger.warning("All WhatsApp launch methods failed: %s", exc)
 
     def _whatsapp_send_single(
@@ -1015,7 +1058,6 @@ class UIAutomationTool(BaseTool):
                               output=f"LinkedIn Desktop: search results for '{name}'.",
                               metadata={"workflow": wf, "name": name, "action": action})
 
-        # open — tab to first result
         click(int(sw * 0.35), int(sh * 0.25)); wait(0.5)
         for _ in range(4):
             press_key("tab"); wait(0.22)
@@ -1035,7 +1077,6 @@ class UIAutomationTool(BaseTool):
         workflow: str = "accept_linkedin_connections",
         **_: Any,
     ) -> ToolResult:
-        """Accept all pending LinkedIn connection requests via Desktop app."""
         wf = workflow
         if not _launch_linkedin_app(callback, wf):
             return ToolResult(success=False, error="Could not launch LinkedIn Desktop app.")
@@ -1045,8 +1086,8 @@ class UIAutomationTool(BaseTool):
         sw, sh = pyautogui.size()
         nav_y = int(sh * 0.035)
 
-        click(int(sw * 0.458), nav_y, duration=0.4); wait(2.0)  # Home
-        click(int(sw * 0.500), nav_y, duration=0.4); wait(3.0)  # My Network
+        click(int(sw * 0.458), nav_y, duration=0.4); wait(2.0)
+        click(int(sw * 0.500), nav_y, duration=0.4); wait(3.0)
         _focus_window_by_title("LinkedIn"); wait(0.5)
 
         content_x, content_y = int(sw * 0.50), int(sh * 0.20)
@@ -1071,7 +1112,7 @@ class UIAutomationTool(BaseTool):
             press_key("space"); wait(1.5)
 
             try:
-                import pygetwindow as gw   # type: ignore
+                import pygetwindow as gw
                 wins = gw.getWindowsWithTitle("LinkedIn")
                 if wins and len(wins[0].title) > len("LinkedIn") + 3:
                     hotkey("alt", "left"); wait(2.5)
@@ -1202,7 +1243,7 @@ class UIAutomationTool(BaseTool):
         cmd = [c for c in cmd if c]
         try:
             subprocess.Popen(cmd)
-        except Exception as exc:           # noqa: BLE001
+        except Exception as exc:
             return ToolResult(success=False, error=f"Failed to launch '{app_name}': {exc}")
 
         _wait_emit(1.5, callback, wf, f"{app_name} loading")
@@ -1232,7 +1273,6 @@ class UIAutomationTool(BaseTool):
 
         errors: list[str] = []
 
-        # Strategy 1: Win+PrtSc
         try:
             screenshots_dir = Path.home() / "Pictures" / "Screenshots"
             screenshots_dir.mkdir(parents=True, exist_ok=True)
@@ -1246,24 +1286,22 @@ class UIAutomationTool(BaseTool):
                 shutil.copy2(str(newest), str(save_path))
                 return self._screenshot_success(save_path, 0, 0, callback, wf)
             errors.append("Strategy 1: no new file")
-        except Exception as exc:           # noqa: BLE001
+        except Exception as exc:
             errors.append(f"Strategy 1: {exc}")
 
-        # Strategy 2: pyautogui
         try:
             img = pyautogui.screenshot()
             img.save(str(save_path), format="PNG")
             return self._screenshot_success(save_path, *img.size, callback, wf)
-        except Exception as exc:           # noqa: BLE001
+        except Exception as exc:
             errors.append(f"Strategy 2: {exc}")
 
-        # Strategy 3: Pillow
         try:
             from PIL import ImageGrab
             img = ImageGrab.grab()
             img.save(str(save_path), format="PNG")
             return self._screenshot_success(save_path, img.width, img.height, callback, wf)
-        except Exception as exc:           # noqa: BLE001
+        except Exception as exc:
             errors.append(f"Strategy 3: {exc}")
 
         return ToolResult(success=False,

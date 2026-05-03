@@ -5,7 +5,7 @@ const VOICE_TRANSCRIBE_URL = 'http://localhost:8000/voice/transcribe';
 const VOICE_CHECK_URL      = 'http://localhost:8000/voice/check';
 const APPROVE_URL          = 'http://localhost:8000/approve';
 const REJECT_URL           = 'http://localhost:8000/reject';
-const NL_PREVIEW_URL       = 'http://localhost:8000/nl_command/preview';  // NEW
+const NL_PREVIEW_URL       = 'http://localhost:8000/nl_command/preview';
 
 /* ── DOM refs ───────────────────────────────────────────────────────────── */
 const app        = document.getElementById('app');
@@ -243,36 +243,75 @@ async function sendReject() {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   COMMAND PILL  (NEW — nl_command translated command display)
+   COMMAND PILL  — NL command display card
+   The ONLY interactive element inside the log panel.
+   Everything else in .log-inner has pointer-events: none.
    ═════════════════════════════════════════════════════════════════════════ */
 
 function appendCommandPill(ev) {
   const msg = ev.message || '';
-  // The stage message is "Translated command: <cmd>"
+  // Strip the "Translated command: " prefix emitted by NLCommandTool
   const cmd = msg.replace(/^Translated command:\s*/i, '').trim();
   if (!cmd) return;
 
+  // Build the pill element imperatively so we can attach the click handler
+  // without relying on innerHTML event wiring (which would be stripped by CSP)
   const pill = document.createElement('div');
   pill.className = 'command-pill';
-  pill.innerHTML =
-    '<div class="command-pill-label">' +
-      '<span class="command-pill-icon">💻</span> Translated Command' +
-    '</div>' +
-    '<div class="command-pill-code">' + escapeHtml(cmd) + '</div>' +
-    '<div class="command-pill-actions">' +
-      '<button class="command-pill-copy" title="Copy to clipboard">Copy</button>' +
-    '</div>';
 
-  pill.querySelector('.command-pill-copy').addEventListener('click', () => {
+  // ── Label row ────────────────────────────────────────────────────────
+  const label = document.createElement('div');
+  label.className = 'command-pill-label';
+  label.innerHTML = '<span class="command-pill-icon">💻</span> Translated Command';
+
+  // ── Command code display ─────────────────────────────────────────────
+  const code = document.createElement('div');
+  code.className = 'command-pill-code';
+  code.textContent = cmd;            // textContent is safe — no HTML injection
+
+  // ── Footer / actions row ─────────────────────────────────────────────
+  const actions = document.createElement('div');
+  actions.className = 'command-pill-actions';
+
+  const hint = document.createElement('span');
+  hint.className = 'command-pill-hint';
+  hint.textContent = 'click to copy';
+
+  const copyBtn = document.createElement('button');
+  copyBtn.className = 'command-pill-copy';
+  copyBtn.type = 'button';
+  copyBtn.textContent = 'Copy';
+
+  // ── The one and only click handler in the log ─────────────────────────
+  copyBtn.addEventListener('click', (e) => {
+    // Prevent the click from bubbling up to the window/bar listeners
+    e.stopPropagation();
+
     navigator.clipboard.writeText(cmd).then(() => {
-      const btn = pill.querySelector('.command-pill-copy');
-      btn.textContent = 'Copied ✓';
-      btn.classList.add('copied');
+      copyBtn.textContent = 'Copied ✓';
+      copyBtn.classList.add('copied');
+      hint.textContent = 'copied to clipboard!';
+
       setTimeout(() => {
-        if (btn) { btn.textContent = 'Copy'; btn.classList.remove('copied'); }
-      }, 1800);
+        if (copyBtn) {
+          copyBtn.textContent = 'Copy';
+          copyBtn.classList.remove('copied');
+          hint.textContent = 'click to copy';
+        }
+      }, 2000);
+    }).catch(() => {
+      // Fallback for environments where clipboard API is restricted
+      copyBtn.textContent = 'Failed';
+      setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
     });
   });
+
+  actions.appendChild(hint);
+  actions.appendChild(copyBtn);
+
+  pill.appendChild(label);
+  pill.appendChild(code);
+  pill.appendChild(actions);
 
   logInner.appendChild(pill);
   scrollLogToBottom();
@@ -453,13 +492,13 @@ async function streamEvents(events) {
       await sleep(8);
       continue;
     }
-    // ── NEW: NL command pill ─────────────────────────────────────────
+    // NL command pill — the only interactive card in the log
     if (ev.stage === 'command_ready') {
       appendCommandPill(ev);
       await sleep(delay);
       continue;
     }
-    // Default
+    // Default log entry
     appendLogEntry({
       type:    ev.type    || 'info',
       stage:   ev.stage   || '',
@@ -494,10 +533,22 @@ function appendLogEntry({ type, stage, message, ts, className }) {
   entry.classList.add('log-entry');
   if (className) entry.classList.add(className);
   entry.setAttribute('data-type', type);
-  entry.innerHTML =
-    '<span class="log-ts">'    + escapeHtml(formatTs(ts))  + '</span>' +
-    '<span class="log-stage">' + escapeHtml(stage)          + '</span>' +
-    '<span class="log-msg">'   + escapeHtml(message)        + '</span>';
+  // Build with textContent to avoid any XSS, then assemble
+  const tsEl = document.createElement('span');
+  tsEl.className = 'log-ts';
+  tsEl.textContent = formatTs(ts);
+
+  const stageEl = document.createElement('span');
+  stageEl.className = 'log-stage';
+  stageEl.textContent = stage;
+
+  const msgEl = document.createElement('span');
+  msgEl.className = 'log-msg';
+  msgEl.textContent = message;
+
+  entry.appendChild(tsEl);
+  entry.appendChild(stageEl);
+  entry.appendChild(msgEl);
   logInner.appendChild(entry);
   scrollLogToBottom();
 }

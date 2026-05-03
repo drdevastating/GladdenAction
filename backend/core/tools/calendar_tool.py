@@ -82,49 +82,33 @@ def _emit(cb: EventCallback, ev: dict) -> None:
 
 # ── Launch helpers ────────────────────────────────────────────────────────── #
 
-_CALENDAR_CMDS = [
-    # Windows 10/11 Mail & Calendar app URI
-    ["cmd", "/c", "start", "", "outlookcal:"],
-    # UWP shell: launch directly
-    [
-        "explorer.exe",
-        "shell:appsfolder\\microsoft.windowscommunicationsapps_8wekyb3d8bbwe!"
-        "microsoft.windowslive.calendar",
-    ],
-    # Generic shell open
-    ["cmd", "/c", "start", "calendar"],
-]
-
-
 def _launch_calendar() -> bool:
-    """Try each launch strategy; return True if at least one Popen succeeded."""
-    for cmd in _CALENDAR_CMDS:
-        try:
-            subprocess.Popen(
-                cmd,
-                shell=False,
-                creationflags=subprocess.CREATE_NO_WINDOW
-                if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
-            )
-            return True
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("Calendar launch attempt failed (%s): %s", cmd[0], exc)
-
-    # Last resort: Windows Start-menu search
+    """Launch One Calendar via Windows Start menu search (most reliable)."""
     try:
+        # Open Windows Start menu
         pyautogui.hotkey("win")
-        time.sleep(0.7)
-        slow_type("calendar", interval=0.08)
-        time.sleep(0.5)
+        time.sleep(0.8)
+        
+        # Type "One Calendar"
+        slow_type("One Calendar", interval=0.08)
+        time.sleep(0.6)
+        
+        # Press Enter to launch
         pyautogui.press("enter")
+        time.sleep(0.5)
+        
         return True
     except Exception as exc:  # noqa: BLE001
-        logger.debug("Calendar Start-menu launch failed: %s", exc)
+        logger.debug("Calendar launch via Start menu failed: %s", exc)
+    
     return False
 
 
 def _focus_calendar() -> bool:
     """Bring the Calendar window to the foreground."""
+    # Try "One Calendar" first, then fall back to generic "Calendar"
+    if focus_app("One Calendar"):
+        return True
     return focus_app("Calendar")
 
 
