@@ -456,20 +456,11 @@ class UIAutomationTool(BaseTool):
 
         _emit(callback, _event(
             "info", "saving_event",
-            "Clicking the Save button to create the event…", wf,
+            "Saving the event using Ctrl+S…", wf,
         ))
 
-        # Primary attempt — standard 1920×1080 position
-        save_x1 = int(sw * 0.862)
-        save_y1 = int(sh * 0.062)
-        click(save_x1, save_y1, duration=0.45)
-        wait(2.0, "Checking if event saved")
-
-        # Secondary attempt — slightly different position
-        # (catches different Chrome UI densities)
-        save_x2 = int(sw * 0.880)
-        save_y2 = int(sh * 0.058)
-        click(save_x2, save_y2, duration=0.35)
+        # Use keyboard shortcut to save the event
+        press_key("ctrl+s")
         wait(2.0, "Event save confirmation")
 
         _emit(callback, _event(

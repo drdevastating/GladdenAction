@@ -91,27 +91,64 @@ RULE 3 — DIRECT API TOOLS (fallback only):
 Use "file_creation" only when the user explicitly asks for a direct/silent file
 operation with no mention of a visible app.
 
-RULE 4 — NATURAL LANGUAGE → SHELL COMMANDS (nl_command tool):
+RULE 4 — NATURAL LANGUAGE → COMMANDS  (nl_command tool):
 Select "nl_command" when the user's message matches ANY of these patterns:
+
+  SHELL commands:
   - "how do I [verb] [thing] in terminal / cmd / powershell / command line"
   - "give me the command to …"
   - "what command …" / "what's the command for …"
   - "run a command that …"
-  - "find files that …" / "find all [files/folders] …" in a file-search context
+  - "find files that …" / "find all [files/folders] …"
   - "check what process is on port …" / "which process is using port …"
   - "show me disk usage / memory usage / network stats" via a command
   - "compress / zip / archive [folder/files]"
   - "kill the process on port …" / "terminate process …" via command
-  - "list all [running processes / open ports / env vars / services]" via a command
+  - "list all [running processes / open ports / env vars / services]" via CLI
   - "count [lines/files/words] …"
   - "I always forget the command for …"
-  - "I don't remember how to … in terminal"
-  - "convert / translate [description] to a command"
-  - "what is the [git/npm/pip/docker] command to …"
   - System monitoring, file searching, or network diagnostics via CLI
+
+  GIT commands:
+  - "git command to …" / "how do I … in git"
+  - "undo / revert / reset" a commit, push, or change via git
+  - "show git log …" / "search git history …"
+  - "stash", "cherry-pick", "squash", "rebase", "bisect"
+  - "list branches sorted by …" / "find commits by …"
+  - "what will be pushed" / "show diff between branches"
+  - "amend last commit" / "create a signed tag"
+  - Anything involving commit history, branches, remotes, or git workflows
+
+  SQL queries:
+  - "write a SQL query to …" / "SQL to find / count / update …"
+  - "how do I join … in SQL" / "query to get all … where …"
+  - "create a table …" / "add an index on …"
+  - "SQL for pagination" / "SQL to delete duplicates"
+  - Anything described as a database query, DML, or DDL
+
+  REGEX patterns:
+  - "regex / regular expression to match …"
+  - "pattern to validate / extract / parse …"
+  - "give me a regex for emails / URLs / phone numbers / dates"
+  - "regex with lookahead / lookbehind / capture group"
+  - "does [string] match [pattern]" / "explain this regex: …"
+
+  DOCKER commands:
+  - "docker command to …" / "how do I … in docker"
+  - "show running containers / images / volumes"
+  - "tail logs for container …" / "exec into container"
+  - "docker compose …" / "inspect container network"
+
+  NETWORK commands:
+  - "check if [host] is reachable" / "ping …"
+  - "trace route to …" / "DNS lookup for …"
+  - "find my public IP" / "show listening ports"
+  - "flush DNS cache" / "check SSL certificate"
+  - Anything about network connectivity, DNS, or HTTP checks
 
 RULE 4 ARGUMENT MAPPING for nl_command:
   "request"      → the full natural-language description (required)
+  "category"     → auto-detected; override with: shell | git | sql | regex | docker | network
   "execute"      → true by default; false/preview_only=true when user says
                    "just show me", "what would the command be", "don't run", "preview"
   "preview_only" → true when user says "just show the command", "don't execute"
@@ -186,6 +223,36 @@ Response: {"tool": "system_control", "arguments": {"domain": "process", "action"
 
 User: "What is my CPU usage?"
 Response: {"tool": "system_control", "arguments": {"domain": "system", "action": "cpu_usage"}}
+
+User: "What git command squashes the last 4 commits?"
+Response: {"tool": "nl_command", "arguments": {"request": "squash the last 4 commits", "category": "git", "preview_only": true}}
+
+User: "Write a SQL query to find users who signed up in the last 30 days but never placed an order"
+Response: {"tool": "nl_command", "arguments": {"request": "find users who signed up in the last 30 days but never placed an order", "category": "sql", "preview_only": true}}
+
+User: "Give me a regex to validate email addresses"
+Response: {"tool": "nl_command", "arguments": {"request": "validate email addresses", "category": "regex", "preview_only": true}}
+
+User: "Docker command to tail logs for the web container"
+Response: {"tool": "nl_command", "arguments": {"request": "tail logs for the web container", "category": "docker", "execute": true}}
+
+User: "How do I find my public IP from the terminal?"
+Response: {"tool": "nl_command", "arguments": {"request": "find my public IP address from the terminal", "category": "network", "execute": true}}
+
+User: "Run git log with a graph showing the last 20 commits"
+Response: {"tool": "nl_command", "arguments": {"request": "show git log with graph for last 20 commits", "category": "git", "execute": true}}
+
+User: "SQL query to count orders grouped by status"
+Response: {"tool": "nl_command", "arguments": {"request": "count orders grouped by status", "category": "sql", "preview_only": true}}
+
+User: "Regex to extract all URLs from a string"
+Response: {"tool": "nl_command", "arguments": {"request": "extract all URLs from a string", "category": "regex", "preview_only": true}}
+
+User: "What git command lists branches sorted by most recent commit?"
+Response: {"tool": "nl_command", "arguments": {"request": "list branches sorted by most recent commit date", "category": "git", "preview_only": true}}
+
+User: "Show me the docker command to see disk usage"
+Response: {"tool": "nl_command", "arguments": {"request": "show docker disk usage", "category": "docker", "preview_only": true}}
 """
 
 _USER_PROMPT_TEMPLATE = """\
@@ -231,6 +298,19 @@ _INTENT_SIGNALS = [
     "write a", "write an", "create a", "implement", "build a",
     "a program that", "a script that", "a function that",
     "hello world",
+    # git
+    "commit", "squash", "rebase", "stash", "cherry", "bisect", "reflog",
+    "amend", "branch", "merge", "undo commit",
+    # sql
+    "sql", "query", "select", "insert", "update", "join", "group by",
+    "where clause", "create table",
+    # regex
+    "regex", "regular expression", "pattern to match", "pattern for",
+    "match emails", "match urls", "validate",
+    # docker
+    "docker", "container", "image logs",
+    # network
+    "trace route", "dns lookup", "ping ",
 ]
 
 _CONTENT_WORKFLOWS = {

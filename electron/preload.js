@@ -15,6 +15,9 @@ contextBridge.exposeInMainWorld('gladden', {
   resizeWindow: (height) =>
     ipcRenderer.send('resize-window', height),
 
+  setHaze: (active) =>
+    ipcRenderer.send('set-haze', active),
+
   onTriggerHide: (cb) =>
     ipcRenderer.on('trigger-hide', () => cb()),
 

@@ -5,7 +5,6 @@ const VOICE_TRANSCRIBE_URL = 'http://localhost:8000/voice/transcribe';
 const VOICE_CHECK_URL      = 'http://localhost:8000/voice/check';
 const APPROVE_URL          = 'http://localhost:8000/approve';
 const REJECT_URL           = 'http://localhost:8000/reject';
-const NL_PREVIEW_URL       = 'http://localhost:8000/nl_command/preview';
 
 /* ── DOM refs ───────────────────────────────────────────────────────────── */
 const app        = document.getElementById('app');
@@ -19,21 +18,48 @@ const micBtn     = document.getElementById('mic-btn');
 const micRipple  = document.getElementById('mic-ripple');
 const micWaves   = document.getElementById('mic-waves');
 
+/* ── NL command card (inline, below bar, no log panel) ─────────────────── */
+let nlCard = null;       // the floating command card element
+
 /* ── Constants ──────────────────────────────────────────────────────────── */
 const BAR_HEIGHT       = 56;
 const LOG_HEIGHT       = 380;
 const APPROVAL_HEIGHT  = 460;
+const NL_CARD_HEIGHT   = 78;
 const PADDING          = 16;
 
 /* ── State ──────────────────────────────────────────────────────────────── */
-let isExecuting    = false;
-let isRecording    = false;
-let isTranscribing = false;
-let logOpen        = false;
-let voiceReady     = false;
+let isExecuting     = false;
+let isRecording     = false;
+let isTranscribing  = false;
+let logOpen         = false;
+let voiceReady      = false;
 let approvalPending = false;
-let approvalTimer  = null;
+let approvalTimer   = null;
 let approvalCountdownEl = null;
+
+/* ── Detect NL command instructions ─────────────────────────────────────── */
+const NL_PATTERNS = [
+  /how do i .+ (terminal|cmd|command|powershell)/i,
+  /give me the command/i,
+  /what('s| is) the command/i,
+  /run a command that/i,
+  /find (all |files? that)/i,
+  /check what('s| is) (on |listening on )?port/i,
+  /which process is (on|using) port/i,
+  /show (me )?(disk|memory|network)/i,
+  /compress|zip|archive/i,
+  /kill the process on port/i,
+  /list all (running|open|env)/i,
+  /count (lines|files|words)/i,
+  /i always forget the command/i,
+  /i don'?t remember how to .+ terminal/i,
+  /what (git|npm|pip|docker) command/i,
+];
+
+function isNLCommand(instruction) {
+  return NL_PATTERNS.some(p => p.test(instruction));
+}
 
 /* ═══════════════════════════════════════════════════════════════════════════
    VOICE READINESS CHECK
@@ -59,11 +85,110 @@ async function checkVoiceReady() {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+   NL COMMAND CARD  (floats below the bar, no log panel)
+   ═════════════════════════════════════════════════════════════════════════ */
+
+function showNLCard(cmd) {
+  dismissNLCard();
+
+  const card = document.createElement('div');
+  card.id = 'nl-card';
+  card.className = 'nl-card';
+
+  // ── Left section: icon + command text ──
+  const body = document.createElement('div');
+  body.className = 'nl-card-body';
+
+  const icon = document.createElement('span');
+  icon.className = 'nl-card-icon';
+  icon.textContent = '⌘';
+
+  const code = document.createElement('span');
+  code.className = 'nl-card-code';
+  code.textContent = cmd;
+
+  body.appendChild(icon);
+  body.appendChild(code);
+
+  // ── Right section: copy button ──
+  const actions = document.createElement('div');
+  actions.className = 'nl-card-actions';
+
+  const copyBtn = document.createElement('button');
+  copyBtn.className = 'nl-copy-btn';
+  copyBtn.type = 'button';
+  copyBtn.title = 'Copy to clipboard';
+  copyBtn.innerHTML = `
+    <svg class="nl-copy-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="7" y="7" width="10" height="12" rx="2" stroke="currentColor" stroke-width="1.5"/>
+      <path d="M13 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    </svg>
+    <span class="nl-copy-label">Copy</span>
+  `;
+
+  copyBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText(cmd).then(() => {
+      copyBtn.classList.add('copied');
+      copyBtn.querySelector('.nl-copy-label').textContent = 'Copied!';
+      copyBtn.innerHTML = `
+        <svg class="nl-copy-icon" viewBox="0 0 20 20" fill="none">
+          <path d="M4 10l4 4 8-8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="nl-copy-label">Copied!</span>
+      `;
+      setTimeout(() => {
+        if (!card.isConnected) return;
+        copyBtn.classList.remove('copied');
+        copyBtn.innerHTML = `
+          <svg class="nl-copy-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="7" y="7" width="10" height="12" rx="2" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M13 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          <span class="nl-copy-label">Copy</span>
+        `;
+      }, 2000);
+    }).catch(() => {
+      copyBtn.querySelector('.nl-copy-label').textContent = 'Failed';
+      setTimeout(() => { copyBtn.querySelector('.nl-copy-label').textContent = 'Copy'; }, 1500);
+    });
+  });
+
+  actions.appendChild(copyBtn);
+
+  card.appendChild(body);
+  card.appendChild(actions);
+
+  // Dismiss on click outside
+  card.addEventListener('click', (e) => e.stopPropagation());
+
+  app.appendChild(card);
+  nlCard = card;
+
+  // Resize window to fit card
+  window.gladden.resizeWindow(BAR_HEIGHT + NL_CARD_HEIGHT + PADDING + 8);
+}
+
+function dismissNLCard() {
+  if (nlCard && nlCard.isConnected) {
+    nlCard.classList.add('nl-card-exit');
+    setTimeout(() => { if (nlCard) { nlCard.remove(); nlCard = null; } }, 220);
+  } else {
+    nlCard = null;
+  }
+  // Only shrink if log isn't open
+  if (!logOpen) {
+    window.gladden.resizeWindow(BAR_HEIGHT + PADDING);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
    LOG PANEL OPEN / CLOSE
    ═════════════════════════════════════════════════════════════════════════ */
 
 function openLog(height) {
   if (logOpen) return;
+  dismissNLCard();
   logOpen = true;
   logPanel.classList.add('expanded');
   bar.classList.add('log-open');
@@ -82,19 +207,21 @@ function closeLog() {
 closeBtn.addEventListener('click', () => closeLog());
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   VISIBILITY
+   VISIBILITY / HAZE
    ═════════════════════════════════════════════════════════════════════════ */
 
 function showOverlay() {
   app.classList.remove('hidden');
   app.classList.add('visible');
   window.gladden.setIgnoreMouseEvents(false);
+  window.gladden.showWindow();
   requestAnimationFrame(() => input.focus());
 }
 
 function hideOverlay() {
   if (isRecording || isTranscribing) return;
   closeLog();
+  dismissNLCard();
   app.classList.add('hidden');
   app.classList.remove('visible');
   window.gladden.hideWindow();
@@ -111,6 +238,13 @@ window.gladden.onTriggerHide(() => hideOverlay());
 window.gladden.onTriggerShow(() => { showOverlay(); input.focus(); });
 window.gladden.setIgnoreMouseEvents(false);
 
+/* ── Dismiss NL card on click outside ──────────────────────────────────── */
+document.addEventListener('click', (e) => {
+  if (nlCard && !nlCard.contains(e.target)) {
+    dismissNLCard();
+  }
+});
+
 /* ═══════════════════════════════════════════════════════════════════════════
    INPUT HANDLING
    ═════════════════════════════════════════════════════════════════════════ */
@@ -122,13 +256,17 @@ input.addEventListener('keydown', (e) => {
     if (isTranscribing) return;
     if (!isExecuting) {
       const instruction = input.value.trim();
-      if (instruction) executeInstruction(instruction);
+      if (instruction) {
+        dismissNLCard();
+        executeInstruction(instruction);
+      }
     }
     return;
   }
   if (e.key === 'Escape') {
     if (isRecording || isTranscribing) { cancelRecording(); return; }
     if (approvalPending) { sendReject(); return; }
+    if (nlCard) { dismissNLCard(); return; }
     if (logOpen) { closeLog(); return; }
     hideOverlay();
   }
@@ -243,81 +381,6 @@ async function sendReject() {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   COMMAND PILL  — NL command display card
-   The ONLY interactive element inside the log panel.
-   Everything else in .log-inner has pointer-events: none.
-   ═════════════════════════════════════════════════════════════════════════ */
-
-function appendCommandPill(ev) {
-  const msg = ev.message || '';
-  // Strip the "Translated command: " prefix emitted by NLCommandTool
-  const cmd = msg.replace(/^Translated command:\s*/i, '').trim();
-  if (!cmd) return;
-
-  // Build the pill element imperatively so we can attach the click handler
-  // without relying on innerHTML event wiring (which would be stripped by CSP)
-  const pill = document.createElement('div');
-  pill.className = 'command-pill';
-
-  // ── Label row ────────────────────────────────────────────────────────
-  const label = document.createElement('div');
-  label.className = 'command-pill-label';
-  label.innerHTML = '<span class="command-pill-icon">💻</span> Translated Command';
-
-  // ── Command code display ─────────────────────────────────────────────
-  const code = document.createElement('div');
-  code.className = 'command-pill-code';
-  code.textContent = cmd;            // textContent is safe — no HTML injection
-
-  // ── Footer / actions row ─────────────────────────────────────────────
-  const actions = document.createElement('div');
-  actions.className = 'command-pill-actions';
-
-  const hint = document.createElement('span');
-  hint.className = 'command-pill-hint';
-  hint.textContent = 'click to copy';
-
-  const copyBtn = document.createElement('button');
-  copyBtn.className = 'command-pill-copy';
-  copyBtn.type = 'button';
-  copyBtn.textContent = 'Copy';
-
-  // ── The one and only click handler in the log ─────────────────────────
-  copyBtn.addEventListener('click', (e) => {
-    // Prevent the click from bubbling up to the window/bar listeners
-    e.stopPropagation();
-
-    navigator.clipboard.writeText(cmd).then(() => {
-      copyBtn.textContent = 'Copied ✓';
-      copyBtn.classList.add('copied');
-      hint.textContent = 'copied to clipboard!';
-
-      setTimeout(() => {
-        if (copyBtn) {
-          copyBtn.textContent = 'Copy';
-          copyBtn.classList.remove('copied');
-          hint.textContent = 'click to copy';
-        }
-      }, 2000);
-    }).catch(() => {
-      // Fallback for environments where clipboard API is restricted
-      copyBtn.textContent = 'Failed';
-      setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
-    });
-  });
-
-  actions.appendChild(hint);
-  actions.appendChild(copyBtn);
-
-  pill.appendChild(label);
-  pill.appendChild(code);
-  pill.appendChild(actions);
-
-  logInner.appendChild(pill);
-  scrollLogToBottom();
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════
    VOICE RECORDING
    ═════════════════════════════════════════════════════════════════════════ */
 
@@ -421,13 +484,21 @@ function cancelRecording() {
 
 async function executeInstruction(instruction) {
   if (isExecuting) return;
+
+  const isNL = isNLCommand(instruction);
+
   isExecuting = true;
   input.classList.add('executing');
   input.disabled = true;
   setStatus('loading');
-  clearLog();
-  openLog();
-  appendLogEntry({ type: 'info', stage: 'agent_start', message: '→ ' + instruction });
+
+  // For NL commands: don't open log, show inline card after
+  // For everything else: open log as usual
+  if (!isNL) {
+    clearLog();
+    openLog();
+    appendLogEntry({ type: 'info', stage: 'agent_start', message: '→ ' + instruction });
+  }
 
   try {
     const response = await fetch(BACKEND_URL, {
@@ -437,20 +508,61 @@ async function executeInstruction(instruction) {
     });
     if (!response.ok) throw new Error('HTTP ' + response.status + ' — ' + response.statusText);
     const data = await response.json();
-    if (Array.isArray(data.events) && data.events.length > 0) {
-      await streamEvents(data.events);
-    }
-    appendSeparator();
-    if (data.success) {
-      appendLogEntry({ type: 'status', stage: 'done', message: data.output || 'Completed.', className: 'result-ok' });
-      setStatus('success');
+
+    if (isNL) {
+      // ── NL path: find the translated command and show inline card ──
+      let translatedCmd = null;
+
+      if (Array.isArray(data.events)) {
+        for (const ev of data.events) {
+          if (ev.stage === 'command_ready') {
+            translatedCmd = (ev.message || '').replace(/^Translated command:\s*/i, '').trim();
+            break;
+          }
+        }
+      }
+
+      // Fallback: extract from output
+      if (!translatedCmd && data.output) {
+        translatedCmd = String(data.output).replace(/^Command \(not executed\):\s*/i, '').trim();
+      }
+      // Fallback: metadata
+      if (!translatedCmd && data.events) {
+        for (const ev of data.events) {
+          if (ev.metadata && ev.metadata.translated_command) {
+            translatedCmd = ev.metadata.translated_command;
+            break;
+          }
+        }
+      }
+
+      if (translatedCmd) {
+        showNLCard(translatedCmd);
+        setStatus('success');
+      } else {
+        // Couldn't extract command — show error in log
+        openLog();
+        appendLogEntry({ type: 'error', stage: 'failed', message: data.error || 'Could not translate command.', className: 'result-err' });
+        setStatus('error');
+      }
     } else {
-      appendLogEntry({ type: 'error', stage: 'failed', message: data.error || 'Unknown error.', className: 'result-err' });
-      setStatus('error');
+      // ── Normal path ──
+      if (Array.isArray(data.events) && data.events.length > 0) {
+        await streamEvents(data.events);
+      }
+      appendSeparator();
+      if (data.success) {
+        appendLogEntry({ type: 'status', stage: 'done', message: data.output || 'Completed.', className: 'result-ok' });
+        setStatus('success');
+      } else {
+        appendLogEntry({ type: 'error', stage: 'failed', message: data.error || 'Unknown error.', className: 'result-err' });
+        setStatus('error');
+      }
     }
   } catch (err) {
     const isConnErr = err.message.includes('Failed to fetch') || err.message.includes('ERR_CONNECTION_REFUSED');
-    appendSeparator();
+    if (!isNL) appendSeparator();
+    else { openLog(); }
     appendLogEntry({
       type: 'error', stage: 'network_error',
       message: isConnErr ? 'Backend not reachable — is the Python server running on :8000?' : err.message,
@@ -470,7 +582,6 @@ async function executeInstruction(instruction) {
 async function streamEvents(events) {
   const delay = events.length > 40 ? 10 : events.length > 20 ? 20 : 35;
   for (const ev of events) {
-    // Approval events
     if (ev.type === 'approval_required') {
       showApprovalBanner(ev);
       await sleep(200);
@@ -486,19 +597,16 @@ async function streamEvents(events) {
       await sleep(200);
       continue;
     }
-    // Terminal output lines
     if (ev.stage === 'stdout_line' || ev.stage === 'stderr_line') {
       appendTerminalLine(ev);
       await sleep(8);
       continue;
     }
-    // NL command pill — the only interactive card in the log
+    // Skip command_ready in normal log — it's only for NL path
     if (ev.stage === 'command_ready') {
-      appendCommandPill(ev);
       await sleep(delay);
       continue;
     }
-    // Default log entry
     appendLogEntry({
       type:    ev.type    || 'info',
       stage:   ev.stage   || '',
@@ -533,7 +641,7 @@ function appendLogEntry({ type, stage, message, ts, className }) {
   entry.classList.add('log-entry');
   if (className) entry.classList.add(className);
   entry.setAttribute('data-type', type);
-  // Build with textContent to avoid any XSS, then assemble
+
   const tsEl = document.createElement('span');
   tsEl.className = 'log-ts';
   tsEl.textContent = formatTs(ts);
