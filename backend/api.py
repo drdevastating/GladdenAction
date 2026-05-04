@@ -141,7 +141,7 @@ class NLCommandRunRequest(BaseModel):
     working_dir: str = ""
 
 class VoiceStartRequest(BaseModel):
-    model_size:   str   = "large-v3"
+    model_size:   str   = "small"
     max_duration: float = 30.0
 
 class VoiceStartResponse(BaseModel):
@@ -160,7 +160,7 @@ class VoiceCheckResponse(BaseModel):
     ready:          bool
 
 class VoiceListenRequest(BaseModel):
-    model_size:   str   = "large-v3"
+    model_size:   str   = "small"
     max_duration: float = 30.0
 
 class VoiceTranscribeResponse(BaseModel):
@@ -318,7 +318,7 @@ def voice_start(req: VoiceStartRequest = VoiceStartRequest()):
         _recording_done.clear()
         _recording_active.set()
 
-        model_size   = req.model_size   or "large-v3"
+        model_size   = req.model_size   or "base"
         max_duration = req.max_duration or 30.0
 
         def _run():
@@ -419,7 +419,7 @@ def voice_transcribe(req: VoiceListenRequest = VoiceListenRequest()):
         _recording_done.clear()
         _recording_active.set()
 
-        model_size   = req.model_size   or "large-v3"
+        model_size   = req.model_size   or "small"
         max_duration = req.max_duration or 30.0
 
         done_event = threading.Event()

@@ -416,7 +416,7 @@ async function startRecording() {
     const res = await fetch(VOICE_START_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model_size: 'large-v3', max_duration: 30.0 }),
+      body: JSON.stringify({ model_size: 'small', max_duration: 30.0 }),
     });
 
     if (!res.ok) {

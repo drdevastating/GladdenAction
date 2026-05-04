@@ -459,9 +459,8 @@ class UIAutomationTool(BaseTool):
             "Saving the event using Ctrl+S…", wf,
         ))
 
-        # Use keyboard shortcut to save the event
-        press_key("ctrl+s")
-        wait(2.0, "Event save confirmation")
+        hotkey("ctrl", "s")
+        wait(2.0, "Event saved")
 
         _emit(callback, _event(
             "status", "workflow_done",
