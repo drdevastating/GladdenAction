@@ -1,6 +1,8 @@
 'use strict';
 
 const BACKEND_URL          = 'http://localhost:8000/execute';
+const VOICE_START_URL      = 'http://localhost:8000/voice/start';
+const VOICE_STOP_URL       = 'http://localhost:8000/voice/stop';
 const VOICE_TRANSCRIBE_URL = 'http://localhost:8000/voice/transcribe';
 const VOICE_CHECK_URL      = 'http://localhost:8000/voice/check';
 const APPROVE_URL          = 'http://localhost:8000/approve';
@@ -19,7 +21,7 @@ const micRipple  = document.getElementById('mic-ripple');
 const micWaves   = document.getElementById('mic-waves');
 
 /* ── NL command card (inline, below bar, no log panel) ─────────────────── */
-let nlCard = null;       // the floating command card element
+let nlCard = null;
 
 /* ── Constants ──────────────────────────────────────────────────────────── */
 const BAR_HEIGHT       = 56;
@@ -29,16 +31,17 @@ const NL_CARD_HEIGHT   = 78;
 const PADDING          = 16;
 
 /* ── State ──────────────────────────────────────────────────────────────── */
-let isExecuting     = false;
-let isRecording     = false;
-let isTranscribing  = false;
-let logOpen         = false;
-let voiceReady      = false;
-let approvalPending = false;
-let approvalTimer   = null;
+let isExecuting        = false;
+let isRecording        = false;      // mic is capturing audio on the backend
+let isTranscribing     = false;      // waiting for stop+transcription result
+let logOpen            = false;
+let voiceReady         = false;
+let approvalPending    = false;
+let approvalTimer      = null;
 let approvalCountdownEl = null;
+let activeStopController = null;     // AbortController for the /voice/stop fetch
 
-/* ── Detect NL command instructions ─────────────────────────────────────── */
+/* ── NL pattern detection ───────────────────────────────────────────────── */
 const NL_PATTERNS = [
   /how do i .+ (terminal|cmd|command|powershell)/i,
   /give me the command/i,
@@ -73,10 +76,10 @@ async function checkVoiceReady() {
     voiceReady = data.ready === true;
     if (voiceReady) {
       micBtn.classList.add('ready');
-      micBtn.title = 'Voice command — click to start, click again to stop';
+      micBtn.title = 'Voice command — click to start recording, click again to stop';
     } else {
       micBtn.classList.add('not-ready');
-      micBtn.title = 'Voice unavailable — install: pip install faster-whisper sounddevice';
+      micBtn.title = 'Voice unavailable — run: pip install faster-whisper sounddevice';
     }
   } catch (_) {
     micBtn.classList.add('not-ready');
@@ -85,7 +88,7 @@ async function checkVoiceReady() {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   NL COMMAND CARD  (floats below the bar, no log panel)
+   NL COMMAND CARD
    ═════════════════════════════════════════════════════════════════════════ */
 
 function showNLCard(cmd) {
@@ -95,7 +98,6 @@ function showNLCard(cmd) {
   card.id = 'nl-card';
   card.className = 'nl-card';
 
-  // ── Left section: icon + command text ──
   const body = document.createElement('div');
   body.className = 'nl-card-body';
 
@@ -110,7 +112,6 @@ function showNLCard(cmd) {
   body.appendChild(icon);
   body.appendChild(code);
 
-  // ── Right section: copy button ──
   const actions = document.createElement('div');
   actions.className = 'nl-card-actions';
 
@@ -130,7 +131,6 @@ function showNLCard(cmd) {
     e.stopPropagation();
     navigator.clipboard.writeText(cmd).then(() => {
       copyBtn.classList.add('copied');
-      copyBtn.querySelector('.nl-copy-label').textContent = 'Copied!';
       copyBtn.innerHTML = `
         <svg class="nl-copy-icon" viewBox="0 0 20 20" fill="none">
           <path d="M4 10l4 4 8-8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -155,17 +155,12 @@ function showNLCard(cmd) {
   });
 
   actions.appendChild(copyBtn);
-
   card.appendChild(body);
   card.appendChild(actions);
-
-  // Dismiss on click outside
   card.addEventListener('click', (e) => e.stopPropagation());
-
   app.appendChild(card);
   nlCard = card;
 
-  // Resize window to fit card
   window.gladden.resizeWindow(BAR_HEIGHT + NL_CARD_HEIGHT + PADDING + 8);
 }
 
@@ -176,14 +171,13 @@ function dismissNLCard() {
   } else {
     nlCard = null;
   }
-  // Only shrink if log isn't open
   if (!logOpen) {
     window.gladden.resizeWindow(BAR_HEIGHT + PADDING);
   }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   LOG PANEL OPEN / CLOSE
+   LOG PANEL
    ═════════════════════════════════════════════════════════════════════════ */
 
 function openLog(height) {
@@ -238,11 +232,8 @@ window.gladden.onTriggerHide(() => hideOverlay());
 window.gladden.onTriggerShow(() => { showOverlay(); input.focus(); });
 window.gladden.setIgnoreMouseEvents(false);
 
-/* ── Dismiss NL card on click outside ──────────────────────────────────── */
 document.addEventListener('click', (e) => {
-  if (nlCard && !nlCard.contains(e.target)) {
-    dismissNLCard();
-  }
+  if (nlCard && !nlCard.contains(e.target)) dismissNLCard();
 });
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -252,6 +243,7 @@ document.addEventListener('click', (e) => {
 input.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
     e.preventDefault();
+    // If currently recording, Enter = stop recording
     if (isRecording) { stopRecording(); return; }
     if (isTranscribing) return;
     if (!isExecuting) {
@@ -288,8 +280,10 @@ bar.addEventListener('click', (e) => {
 
 micBtn.addEventListener('click', (e) => {
   e.stopPropagation();
-  if (isTranscribing || isExecuting) return;
-  if (isRecording) stopRecording(); else startRecording();
+  if (isExecuting) return;
+  if (isTranscribing) return;  // prevent double-click during transcription
+  if (isRecording) stopRecording();
+  else startRecording();
 });
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -381,10 +375,17 @@ async function sendReject() {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   VOICE RECORDING
-   ═════════════════════════════════════════════════════════════════════════ */
+   VOICE RECORDING  (fixed two-phase flow)
 
-let recordingAbortController = null;
+   Phase 1 — startRecording():
+     POST /voice/start  →  backend starts recording thread, returns immediately
+     UI shows "recording…" state
+
+   Phase 2 — stopRecording():
+     POST /voice/stop   →  backend signals stop, waits for transcription,
+                           returns { success, transcript }
+     UI shows "transcribing…" briefly then displays transcript
+   ═════════════════════════════════════════════════════════════════════════ */
 
 function setMicState(state) {
   micBtn.setAttribute('data-state', state);
@@ -399,67 +400,130 @@ function setMicState(state) {
   }
 }
 
-function startRecording() {
+async function startRecording() {
   if (!voiceReady) {
-    appendLogEntry({ type: 'error', stage: 'voice_unavailable', message: 'Voice deps not installed.' });
+    appendLogEntry({
+      type: 'error',
+      stage: 'voice_unavailable',
+      message: 'Voice deps not installed. Run: pip install faster-whisper sounddevice',
+    });
     openLog();
     return;
   }
   if (isRecording || isTranscribing || isExecuting) return;
-  isRecording = true;
-  input.value = '';
-  input.placeholder = 'Recording… press Enter or click mic to stop';
-  input.classList.add('voice-active');
-  setMicState('recording');
-  setStatus('loading');
+
+  try {
+    const res = await fetch(VOICE_START_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model_size: 'large-v3', max_duration: 30.0 }),
+    });
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || 'HTTP ' + res.status);
+    }
+
+    const data = await res.json();
+    if (!data.recording) {
+      throw new Error(data.error || 'Backend did not start recording.');
+    }
+
+    // Recording is now active on the backend
+    isRecording = true;
+    input.value = '';
+    input.placeholder = 'Recording… click mic or press Enter to stop';
+    input.classList.add('voice-active');
+    setMicState('recording');
+    setStatus('loading');
+    window.gladden.setHaze(true);
+
+  } catch (err) {
+    isRecording = false;
+    input.placeholder = 'Ask Gladden…';
+    input.classList.remove('voice-active');
+    setMicState('idle');
+    setStatus('error');
+    appendLogEntry({ type: 'error', stage: 'voice_start_failed', message: err.message, className: 'result-err' });
+    openLog();
+    setTimeout(() => setStatus('idle'), 3000);
+  }
 }
 
 async function stopRecording() {
   if (!isRecording) return;
+
+  // Transition to "transcribing" state immediately for UX
   isRecording = false;
   isTranscribing = true;
   input.placeholder = 'Transcribing…';
-  setMicState('transcribing');
-  recordingAbortController = new AbortController();
+  input.classList.remove('voice-active');
+  input.classList.add('executing');
+  setMicState('idle');
+  setStatus('loading');
+
+  activeStopController = new AbortController();
+
   try {
-    const response = await fetch(VOICE_TRANSCRIBE_URL, {
+    // POST /voice/stop — this blocks until transcription is done (up to ~30s)
+    const res = await fetch(VOICE_STOP_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model_size: 'base', max_duration: 30.0 }),
-      signal: recordingAbortController.signal,
+      body: '{}',
+      signal: activeStopController.signal,
     });
-    if (!response.ok) throw new Error('HTTP ' + response.status);
-    const data = await response.json();
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || 'HTTP ' + res.status);
+    }
+
+    const data = await res.json();
+
     if (data.success && data.transcript) {
+      // Put transcript into the input and let the user submit it
       input.value = data.transcript;
-      input.classList.remove('voice-active');
+      input.classList.remove('executing');
       input.placeholder = 'Ask Gladden…';
+      input.classList.add('voice-confirm');
       input.focus();
       input.setSelectionRange(input.value.length, input.value.length);
+
+      // Remove confirm highlight after a moment
+      setTimeout(() => input.classList.remove('voice-confirm'), 1500);
+
       setStatus('success');
       setTimeout(() => setStatus('idle'), 2000);
     } else {
       input.value = '';
-      input.classList.remove('voice-active');
+      input.classList.remove('executing');
       input.placeholder = 'Ask Gladden…';
-      appendLogEntry({ type: 'error', stage: 'transcription_failed', message: data.error || 'No speech detected.', className: 'result-err' });
+      const msg = data.error || 'No speech detected.';
+      appendLogEntry({ type: 'error', stage: 'transcription_failed', message: msg, className: 'result-err' });
       openLog();
       setStatus('error');
       setTimeout(() => setStatus('idle'), 3000);
     }
+
   } catch (err) {
     if (err.name !== 'AbortError') {
-      appendLogEntry({ type: 'error', stage: 'network_error', message: err.message, className: 'result-err' });
+      const isConn = err.message.includes('Failed to fetch') || err.message.includes('ERR_CONNECTION');
+      appendLogEntry({
+        type: 'error',
+        stage: 'voice_stop_failed',
+        message: isConn ? 'Backend not reachable.' : err.message,
+        className: 'result-err',
+      });
       openLog();
       setStatus('error');
       setTimeout(() => setStatus('idle'), 3000);
     }
-    input.classList.remove('voice-active');
+    input.classList.remove('executing');
     input.placeholder = 'Ask Gladden…';
   } finally {
     isTranscribing = false;
     isRecording = false;
-    recordingAbortController = null;
+    activeStopController = null;
     setMicState('idle');
     input.focus();
   }
@@ -467,11 +531,23 @@ async function stopRecording() {
 
 function cancelRecording() {
   if (!isRecording && !isTranscribing) return;
-  if (recordingAbortController) recordingAbortController.abort();
+
+  // Abort the pending /voice/stop fetch if active
+  if (activeStopController) {
+    activeStopController.abort();
+    activeStopController = null;
+  }
+
+  // Also signal the backend to stop capturing (fire-and-forget)
+  if (isRecording) {
+    fetch(VOICE_STOP_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+      .catch(() => {});
+  }
+
   isRecording = false;
   isTranscribing = false;
   input.value = '';
-  input.classList.remove('voice-active');
+  input.classList.remove('voice-active', 'executing', 'voice-confirm');
   input.placeholder = 'Ask Gladden…';
   setMicState('idle');
   setStatus('idle');
@@ -492,8 +568,6 @@ async function executeInstruction(instruction) {
   input.disabled = true;
   setStatus('loading');
 
-  // For NL commands: don't open log, show inline card after
-  // For everything else: open log as usual
   if (!isNL) {
     clearLog();
     openLog();
@@ -510,7 +584,6 @@ async function executeInstruction(instruction) {
     const data = await response.json();
 
     if (isNL) {
-      // ── NL path: find the translated command and show inline card ──
       let translatedCmd = null;
 
       if (Array.isArray(data.events)) {
@@ -522,31 +595,19 @@ async function executeInstruction(instruction) {
         }
       }
 
-      // Fallback: extract from output
       if (!translatedCmd && data.output) {
         translatedCmd = String(data.output).replace(/^Command \(not executed\):\s*/i, '').trim();
-      }
-      // Fallback: metadata
-      if (!translatedCmd && data.events) {
-        for (const ev of data.events) {
-          if (ev.metadata && ev.metadata.translated_command) {
-            translatedCmd = ev.metadata.translated_command;
-            break;
-          }
-        }
       }
 
       if (translatedCmd) {
         showNLCard(translatedCmd);
         setStatus('success');
       } else {
-        // Couldn't extract command — show error in log
         openLog();
         appendLogEntry({ type: 'error', stage: 'failed', message: data.error || 'Could not translate command.', className: 'result-err' });
         setStatus('error');
       }
     } else {
-      // ── Normal path ──
       if (Array.isArray(data.events) && data.events.length > 0) {
         await streamEvents(data.events);
       }
@@ -562,7 +623,7 @@ async function executeInstruction(instruction) {
   } catch (err) {
     const isConnErr = err.message.includes('Failed to fetch') || err.message.includes('ERR_CONNECTION_REFUSED');
     if (!isNL) appendSeparator();
-    else { openLog(); }
+    else openLog();
     appendLogEntry({
       type: 'error', stage: 'network_error',
       message: isConnErr ? 'Backend not reachable — is the Python server running on :8000?' : err.message,
@@ -602,7 +663,6 @@ async function streamEvents(events) {
       await sleep(8);
       continue;
     }
-    // Skip command_ready in normal log — it's only for NL path
     if (ev.stage === 'command_ready') {
       await sleep(delay);
       continue;
@@ -689,7 +749,7 @@ function escapeHtml(str) {
 }
 
 function formatTs(iso) {
-  var d = iso ? new Date(iso) : new Date();
+  const d = iso ? new Date(iso) : new Date();
   try { return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()); }
   catch(e) { return '--:--:--'; }
 }
