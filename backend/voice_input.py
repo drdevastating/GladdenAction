@@ -1,38 +1,45 @@
 """
-voice_input.py  — v3  (improved accuracy + fixed recording flow)
+voice_input.py  — v4  (concurrency guard + startup preload support)
 
-Changes from v2
+Changes from v3
 ---------------
-* Model upgraded from 'base' to 'large-v3' by default — dramatically
-  better transcription quality, especially for commands, technical terms,
-  port numbers, file paths, and mixed-case identifiers.
-* Fallback chain: large-v3 → medium → base (so it still works on
-  low-RAM machines — caller can override with model_size arg).
-* VAD tuning: shorter min_silence_duration so commands aren't clipped.
-* Added compute_type="int8" for CPU efficiency even on large-v3.
-* Initial_prompt added — primes Whisper for developer/command vocabulary.
-* word_timestamps=True for more accurate segment alignment.
-* Better audio accumulation: chunks are now collected as a NumPy ring
-  rather than a list, and we do a real energy gate so empty/silent
-  recordings return None quickly.
-* Fixed the blocking-call pattern so /voice/transcribe works correctly
-  whether called from the Electron renderer or REPL.
+* Added _recording_lock (threading.Lock) and _is_recording flag to guard
+  against duplicate concurrent calls to transcribe_from_mic().  If a
+  recording session is already active, subsequent calls log a warning and
+  return None immediately instead of opening a second InputStream.
+* Added is_recording() public helper so FastAPI routes (or any caller) can
+  cheaply check recording state before dispatching work.
+* preload_model() public helper exposed so application startup code can
+  warm the Whisper model in a background thread before the first request
+  arrives — eliminating the cold-start delay on /voice/start.
+* Added HF_HUB_DISABLE_SYMLINKS_WARNING env-var set at import time to
+  suppress the noisy Windows cache warning from huggingface_hub.
+* All existing code, comments, constants, and public API preserved intact.
 
-Public API (unchanged)
-----------------------
+Public API (updated)
+--------------------
     transcribe_from_mic(model_size, max_duration) -> str | None
     request_stop()
     check_dependencies() -> dict[str, bool]
+    is_recording() -> bool                      ← NEW
+    preload_model(model_size)                   ← NEW
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from typing import Optional
 
 import numpy as np
+
+# ── Suppress huggingface_hub symlink warning on Windows ─────────────────── #
+# Without this, Windows users without Developer Mode see a noisy warning
+# about degraded caching on every model load.  Setting the env-var here
+# (before any HF import) is the official suppression mechanism.
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +74,13 @@ _loaded_model_size: str | None = None
 # Stop-event: set by request_stop(); cleared at the start of each recording.
 _stop_event = threading.Event()
 
+# ── Concurrency guard ────────────────────────────────────────────────────── #
+# Prevents duplicate /voice/start calls from spawning multiple simultaneous
+# InputStream sessions.  acquire(blocking=False) lets us reject instantly
+# rather than queuing callers.
+_recording_lock = threading.Lock()
+_is_recording   = False
+
 
 # ============================================================================ #
 #  Public API                                                                  #
@@ -78,6 +92,37 @@ def request_stop() -> None:
     and proceed to transcription.  Safe to call when idle (no-op).
     """
     _stop_event.set()
+
+
+def is_recording() -> bool:
+    """
+    Return True if a recording session is currently active.
+
+    Intended for FastAPI route guards::
+
+        @app.post("/voice/start")
+        async def voice_start():
+            if is_recording():
+                return {"status": "already_recording"}
+            ...
+    """
+    return _is_recording
+
+
+def preload_model(model_size: str = "large-v3") -> None:
+    """
+    Eagerly load the Whisper model so the first /voice/start request is
+    fast.  Designed to be called from a FastAPI startup event::
+
+        @app.on_event("startup")
+        async def startup_event():
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, preload_model, "large-v3")
+
+    Safe to call multiple times — subsequent calls are no-ops if the
+    requested model is already cached.
+    """
+    _load_model(model_size)
 
 
 def check_dependencies() -> dict[str, bool]:
@@ -107,9 +152,46 @@ def transcribe_from_mic(
     Returns the transcribed string, or None if nothing was recorded /
     transcription produced no meaningful output.
 
+    If a recording session is already active (e.g. duplicate /voice/start
+    calls), logs a warning and returns None immediately without touching
+    the microphone.
+
     model_size : str
         Which Whisper model to use.  'large-v3' gives the best quality.
         Falls back through _MODEL_CASCADE on OOM / load failure.
+    """
+    global _is_recording
+
+    # ── Concurrency guard ────────────────────────────────────────────────── #
+    # acquire(blocking=False) returns False instantly if another thread
+    # already holds the lock, so duplicate calls are rejected with no delay.
+    if not _recording_lock.acquire(blocking=False):
+        logger.warning(
+            "transcribe_from_mic() called while recording is already active "
+            "— ignoring duplicate call."
+        )
+        return None
+
+    _is_recording = True
+    try:
+        return _record_and_transcribe(model_size, max_duration)
+    finally:
+        # Always release, even if an exception propagates upward.
+        _is_recording = False
+        _recording_lock.release()
+
+
+# ============================================================================ #
+#  Internal helpers                                                            #
+# ============================================================================ #
+
+def _record_and_transcribe(
+    model_size: str,
+    max_duration: float,
+) -> Optional[str]:
+    """
+    Core recording + transcription logic, extracted from transcribe_from_mic()
+    so the concurrency guard wrapper stays readable.
     """
     try:
         import sounddevice as sd
@@ -179,10 +261,6 @@ def transcribe_from_mic(
     # ── Transcribe ───────────────────────────────────────────────────────── #
     return _transcribe(audio, model_size)
 
-
-# ============================================================================ #
-#  Internal helpers                                                            #
-# ============================================================================ #
 
 def _load_model(preferred_size: str = "large-v3"):
     """
