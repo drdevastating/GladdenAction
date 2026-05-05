@@ -463,7 +463,7 @@ async function stopRecording() {
   setStatus('loading');
 
   activeStopController = new AbortController();
-
+  const timeoutId = setTimeout(() => activeStopController.abort(), 90000);
   try {
     // POST /voice/stop — this blocks until transcription is done (up to ~30s)
     const res = await fetch(VOICE_STOP_URL, {
@@ -526,6 +526,7 @@ async function stopRecording() {
     activeStopController = null;
     setMicState('idle');
     input.focus();
+    clearTimeout(timeoutId);
   }
 }
 

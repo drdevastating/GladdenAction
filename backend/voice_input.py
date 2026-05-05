@@ -48,12 +48,12 @@ SAMPLE_RATE      = 16_000     # Whisper expects 16 kHz mono
 MAX_DURATION     = 60         # hard cap in seconds
 MIN_SPEECH_SECS  = 0.3        # ignore recordings shorter than this
 CHUNK_SIZE       = 1024       # ~64 ms per chunk at 16 kHz
-SILENCE_THRESH   = 0.005      # RMS threshold — below this = silence
+SILENCE_THRESH   = 0.001      # RMS threshold — below this = silence
 
 # ── Model preference cascade ─────────────────────────────────────────────── #
 # large-v3 is the best open-source Whisper model (~1.5 GB).  Falls back
 # automatically if RAM/time is limited.
-_MODEL_CASCADE = ["large-v3", "medium", "base"]
+_MODEL_CASCADE = ["base", "small", "medium"]
 
 # ── Whisper initial prompt — primes the model for developer vocabulary ───── #
 # This dramatically reduces hallucinations on short command fragments.
@@ -141,7 +141,7 @@ def check_dependencies() -> dict[str, bool]:
 
 
 def transcribe_from_mic(
-    model_size: str = "large-v3",
+    model_size: str = "base",
     max_duration: float = MAX_DURATION,
 ) -> Optional[str]:
     """
@@ -332,7 +332,7 @@ def _transcribe(audio: np.ndarray, model_size: str) -> Optional[str]:
             temperature=[0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
             compression_ratio_threshold=2.4,
             log_prob_threshold=-1.0,
-            no_speech_threshold=0.6,
+            no_speech_threshold=0.3,
         )
     except TypeError:
         # Older faster-whisper versions may not support all kwargs — retry bare

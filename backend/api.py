@@ -52,6 +52,12 @@ from core.tools.system_control_tool import SystemControlTool
 from core.tools.ui_automation_tool import UIAutomationTool
 from execution.executor import ToolExecutor
 
+try:
+    from voice_input import request_stop as _voice_request_stop 
+    _voice_stop_available = True
+except ImportError:
+    _voice_stop_available = False
+
 
 # ── Build agent once at startup ─────────────────────────────────────────── #
 
@@ -321,12 +327,15 @@ def voice_start(req: VoiceStartRequest = VoiceStartRequest()):
         model_size   = req.model_size   or "base"
         max_duration = req.max_duration or 30.0
 
+        _ms = model_size    # capture before thread starts
+        _md = max_duration
+
         def _run():
             try:
-                from voice_input import transcribe_from_mic, request_stop  # noqa: F401
+                from voice_input import transcribe_from_mic
                 transcript = transcribe_from_mic(
-                    model_size=model_size,
-                    max_duration=max_duration,
+                    model_size=_ms,
+                    max_duration=_md,
                 )
                 _recording_result["transcript"] = transcript
                 _recording_result["success"]    = bool(transcript)
@@ -358,13 +367,11 @@ def voice_stop():
     """
     _assert_voice_deps()
 
-    from voice_input import request_stop
+    if _voice_stop_available:
+        _voice_request_stop()
 
     if not _recording_active.is_set() and not _recording_done.is_set():
         return VoiceStopResponse(success=False, error="No active recording to stop.")
-
-    # Signal the recording thread to stop capturing
-    request_stop()
 
     # Wait for transcription to finish (up to 120 s for large-v3 on CPU)
     finished = _recording_done.wait(timeout=120)
