@@ -5,6 +5,9 @@ Changes from previous version
 ------------------------------
 ADDED: create_event_browser workflow — creates Google Calendar events via Chrome,
        following the same pattern as send_email_browser.
+ADDED: Camera workflows — open_camera, take_photo
+ADDED: Power workflows — shutdown_computer, restart_computer, sleep_computer, 
+       lock_screen, cancel_shutdown
 
 All existing workflows unchanged.
 """
@@ -263,7 +266,9 @@ class UIAutomationTool(BaseTool):
         "'send_whatsapp_desktop', 'send_whatsapp_advanced', 'play_youtube_video', "
         "'linkedin_action', 'accept_linkedin_connections', 'code_workflow_cpp', "
         "'launch_application', 'take_screenshot', "
-        "'open_calendar', 'open_onenote', 'open_clock', 'open_recorder'."
+        "'open_calendar', 'open_onenote', 'open_clock', 'open_recorder', "
+        "'open_camera', 'take_photo', 'shutdown_computer', 'restart_computer', "
+        "'sleep_computer', 'lock_screen', 'cancel_shutdown'."
     )
 
     input_schema: dict[str, Any] = {
@@ -334,6 +339,13 @@ class UIAutomationTool(BaseTool):
             "open_recorder":               self._open_recorder,
             # ── NEW ──
             "create_event_browser":        self._create_event_browser,
+            "open_camera":                 self._open_camera,
+            "take_photo":                  self._take_photo,
+            "shutdown_computer":           self._shutdown_computer,
+            "restart_computer":            self._restart_computer,
+            "sleep_computer":              self._sleep_computer,
+            "lock_screen":                 self._lock_screen,
+            "cancel_shutdown":             self._cancel_shutdown,
         }
 
         handler = _workflow_map.get(workflow)
@@ -1310,3 +1322,146 @@ class UIAutomationTool(BaseTool):
                           metadata={"workflow": wf, "filename": save_path.name,
                                     "path": str(save_path), "size_kb": size_kb,
                                     "resolution": resolution})
+
+    # ================================================================== #
+    #  CAMERA WORKFLOWS                                                    #
+    # ================================================================== #
+
+    def _open_camera(
+        self,
+        callback: EventCallback = None,
+        workflow: str = "open_camera",
+        **kwargs: Any,
+    ) -> ToolResult:
+        """Open the Windows Camera app."""
+        try:
+            _emit(callback, _event("info", "workflow_started", "Opening Windows Camera app...", workflow))
+            subprocess.Popen("explorer.exe shell:appsFolder\\Microsoft.WindowsCamera_8wekyb3d8bbwe!App")
+            _emit(callback, _event("status", "workflow_done", "Camera app opened.", workflow))
+            return ToolResult(success=True, output="Camera app opened successfully.",
+                              metadata={"workflow": workflow})
+        except Exception as exc:
+            msg = f"Failed to open camera: {exc}"
+            _emit(callback, _event("error", "workflow_failed", msg, workflow))
+            return ToolResult(success=False, error=msg)
+
+    def _take_photo(
+        self,
+        callback: EventCallback = None,
+        workflow: str = "take_photo",
+        **kwargs: Any,
+    ) -> ToolResult:
+        """Open camera and take a photo."""
+        try:
+            _emit(callback, _event("info", "workflow_started", "Opening Camera and taking photo...", workflow))
+            subprocess.Popen("explorer.exe shell:appsFolder\\Microsoft.WindowsCamera_8wekyb3d8bbwe!App")
+            _wait_emit(3.0, callback, workflow, "Waiting for camera to open")
+            pyautogui.press('space')  # Take photo
+            _emit(callback, _event("status", "workflow_done", "Photo taken.", workflow))
+            return ToolResult(success=True, output="Photo taken successfully.",
+                              metadata={"workflow": workflow})
+        except Exception as exc:
+            msg = f"Failed to take photo: {exc}"
+            _emit(callback, _event("error", "workflow_failed", msg, workflow))
+            return ToolResult(success=False, error=msg)
+
+    # ================================================================== #
+    #  POWER CONTROL WORKFLOWS                                              #
+    # ================================================================== #
+
+    def _shutdown_computer(
+        self,
+        callback: EventCallback = None,
+        workflow: str = "shutdown_computer",
+        delay_seconds: int | None = None,
+        **kwargs: Any,
+    ) -> ToolResult:
+        """Shut down the computer."""
+        try:
+            _emit(callback, _event("info", "workflow_started", "Initiating shutdown...", workflow))
+            delay = max(0, int(delay_seconds)) if delay_seconds else 0
+            if delay > 0:
+                cmd = f"shutdown /s /t {delay}"
+                _emit(callback, _event("status", "pending", f"Shutdown scheduled in {delay} seconds.", workflow))
+            else:
+                cmd = "shutdown /s /t 1"
+                _emit(callback, _event("status", "pending", "Shutting down immediately.", workflow))
+            subprocess.run(cmd, shell=True)
+            return ToolResult(success=True, output=f"Shutdown command executed (delay: {delay}s).",
+                              metadata={"workflow": workflow, "delay_seconds": delay})
+        except Exception as exc:
+            msg = f"Failed to shutdown: {exc}"
+            _emit(callback, _event("error", "workflow_failed", msg, workflow))
+            return ToolResult(success=False, error=msg)
+
+    def _restart_computer(
+        self,
+        callback: EventCallback = None,
+        workflow: str = "restart_computer",
+        **kwargs: Any,
+    ) -> ToolResult:
+        """Restart the computer."""
+        try:
+            _emit(callback, _event("info", "workflow_started", "Initiating restart...", workflow))
+            subprocess.run("shutdown /r /t 1", shell=True)
+            _emit(callback, _event("status", "pending", "Restart command executed.", workflow))
+            return ToolResult(success=True, output="Restart command executed.",
+                              metadata={"workflow": workflow})
+        except Exception as exc:
+            msg = f"Failed to restart: {exc}"
+            _emit(callback, _event("error", "workflow_failed", msg, workflow))
+            return ToolResult(success=False, error=msg)
+
+    def _sleep_computer(
+        self,
+        callback: EventCallback = None,
+        workflow: str = "sleep_computer",
+        **kwargs: Any,
+    ) -> ToolResult:
+        """Put the computer to sleep."""
+        try:
+            _emit(callback, _event("info", "workflow_started", "Putting computer to sleep...", workflow))
+            subprocess.run("rundll32.exe powrprof.dll,SetSuspendState 0,1,0", shell=True)
+            _emit(callback, _event("status", "workflow_done", "Computer going to sleep.", workflow))
+            return ToolResult(success=True, output="Sleep command executed.",
+                              metadata={"workflow": workflow})
+        except Exception as exc:
+            msg = f"Failed to sleep: {exc}"
+            _emit(callback, _event("error", "workflow_failed", msg, workflow))
+            return ToolResult(success=False, error=msg)
+
+    def _lock_screen(
+        self,
+        callback: EventCallback = None,
+        workflow: str = "lock_screen",
+        **kwargs: Any,
+    ) -> ToolResult:
+        """Lock the screen."""
+        try:
+            _emit(callback, _event("info", "workflow_started", "Locking screen...", workflow))
+            subprocess.run("rundll32.exe user32.dll,LockWorkStation", shell=True)
+            _emit(callback, _event("status", "workflow_done", "Screen locked.", workflow))
+            return ToolResult(success=True, output="Screen locked successfully.",
+                              metadata={"workflow": workflow})
+        except Exception as exc:
+            msg = f"Failed to lock screen: {exc}"
+            _emit(callback, _event("error", "workflow_failed", msg, workflow))
+            return ToolResult(success=False, error=msg)
+
+    def _cancel_shutdown(
+        self,
+        callback: EventCallback = None,
+        workflow: str = "cancel_shutdown",
+        **kwargs: Any,
+    ) -> ToolResult:
+        """Cancel a scheduled shutdown."""
+        try:
+            _emit(callback, _event("info", "workflow_started", "Cancelling shutdown...", workflow))
+            subprocess.run("shutdown /a", shell=True)
+            _emit(callback, _event("status", "workflow_done", "Shutdown cancelled.", workflow))
+            return ToolResult(success=True, output="Shutdown cancelled successfully.",
+                              metadata={"workflow": workflow})
+        except Exception as exc:
+            msg = f"Failed to cancel shutdown: {exc}"
+            _emit(callback, _event("error", "workflow_failed", msg, workflow))
+            return ToolResult(success=False, error=msg)
